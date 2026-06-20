@@ -1,0 +1,21 @@
+{
+  "" : {
+    "const-values" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/build/VALHost.build/Release/Objects-normal/arm64/VALHost-primary.swiftconstvalues",
+    "dependencies" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/build/VALHost.build/Release/Objects-normal/arm64/VALHost-primary.d",
+    "diagnostics" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/build/VALHost.build/Release/Objects-normal/arm64/VALHost-primary.dia",
+    "emit-module-dependencies" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/build/VALHost.build/Release/Objects-normal/arm64/VALHost-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/build/VALHost.build/Release/Objects-normal/arm64/VALHost-primary-emit-module.dia",
+    "pch" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/build/VALHost.build/Release/Objects-normal/arm64/VALHost-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/build/VALHost.build/Release/Objects-normal/arm64/VALHost-primary.swiftdeps"
+  },
+  "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/Source/ContentView.swift" : {
+    "index-unit-output-path" : "/VALHost.build/Release/Objects-normal/arm64/ContentView.o",
+    "llvm-bc" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/build/VALHost.build/Release/Objects-normal/arm64/ContentView.bc",
+    "object" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/build/VALHost.build/Release/Objects-normal/arm64/ContentView.o"
+  },
+  "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/Source/VALHostApp.swift" : {
+    "index-unit-output-path" : "/VALHost.build/Release/Objects-normal/arm64/VALHostApp.o",
+    "llvm-bc" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/build/VALHost.build/Release/Objects-normal/arm64/VALHostApp.bc",
+    "object" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/build/VALHost.build/Release/Objects-normal/arm64/VALHostApp.o"
+  }
+}

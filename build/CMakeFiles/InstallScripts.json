@@ -1,0 +1,11 @@
+{
+	"InstallScripts" : 
+	[
+		"/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build/cmake_install.cmake",
+		"/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build/juce/cmake_install.cmake",
+		"/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build/juce/modules/cmake_install.cmake",
+		"/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build/juce/extras/Build/cmake_install.cmake",
+		"/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build/juce/extras/Build/juceaide/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -1,0 +1,7 @@
+/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/juce/tools/CMakeFiles/install.dir
+/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/juce/tools/CMakeFiles/ALL_BUILD.dir
+/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/juce/tools/CMakeFiles/ZERO_CHECK.dir
+/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/juce/tools/modules/CMakeFiles/install.dir
+/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/juce/tools/extras/Build/CMakeFiles/install.dir
+/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/juce/tools/extras/Build/juceaide/CMakeFiles/juceaide.dir
+/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/juce/tools/extras/Build/juceaide/CMakeFiles/install.dir

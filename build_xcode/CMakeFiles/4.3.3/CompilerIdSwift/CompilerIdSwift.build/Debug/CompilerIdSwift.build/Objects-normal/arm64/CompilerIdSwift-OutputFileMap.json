@@ -1,0 +1,19 @@
+{
+  "" : {
+    "diagnostics" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/CompilerIdSwift-primary.dia",
+    "emit-module-dependencies" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/CompilerIdSwift-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/CompilerIdSwift-primary-emit-module.dia",
+    "pch" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/CompilerIdSwift-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/CompilerIdSwift-primary.swiftdeps"
+  },
+  "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerId/main.swift" : {
+    "const-values" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/main.swiftconstvalues",
+    "dependencies" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/main.d",
+    "diagnostics" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/main.dia",
+    "index-unit-output-path" : "/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/main.o",
+    "llvm-bc" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/main.bc",
+    "object" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/main.o",
+    "swift-dependencies" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/main.swiftdeps",
+    "swiftmodule" : "/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build_xcode/CMakeFiles/4.3.3/CompilerIdSwift/CompilerIdSwift.build/Debug/CompilerIdSwift.build/Objects-normal/arm64/main~partial.swiftmodule"
+  }
+}

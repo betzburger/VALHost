@@ -1,0 +1,20 @@
+{
+	"" : 
+	{
+		"swift-dependencies" : "CMakeFiles/VALHost.dir//VALHost.swiftdeps"
+	},
+	"/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/Source/ContentView.swift" : 
+	{
+		"dependencies" : "CMakeFiles/VALHost.dir/Source/ContentView.swift.o.d",
+		"diagnostics" : "CMakeFiles/VALHost.dir/Source/ContentView.swift.o.dia",
+		"object" : "CMakeFiles/VALHost.dir/Source/ContentView.swift.o",
+		"swift-dependencies" : "CMakeFiles/VALHost.dir/Source/ContentView.swift.o.swiftdeps"
+	},
+	"/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/Source/VALHostApp.swift" : 
+	{
+		"dependencies" : "CMakeFiles/VALHost.dir/Source/VALHostApp.swift.o.d",
+		"diagnostics" : "CMakeFiles/VALHost.dir/Source/VALHostApp.swift.o.dia",
+		"object" : "CMakeFiles/VALHost.dir/Source/VALHostApp.swift.o",
+		"swift-dependencies" : "CMakeFiles/VALHost.dir/Source/VALHostApp.swift.o.swiftdeps"
+	}
+}

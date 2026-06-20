@@ -1,0 +1,14 @@
+# ninja log v7
+1	32	1781950410761154831	/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build/juce/tools/CMakeFiles/cmake.verify_globs	67a48ea092131196
+33	60	1781949211747176030	extras/Build/juceaide/CMakeFiles/juceaide.dir/__/__/__/modules/juce_core/juce_core_CompilationTime.cpp.o	d879f538a1108759
+32	111	1781949211746147881	extras/Build/juceaide/CMakeFiles/juceaide.dir/__/__/__/modules/juce_graphics/juce_graphics_Sheenbidi.c.o	93922fa0d670682
+34	673	1781949211748227055	extras/Build/juceaide/CMakeFiles/juceaide.dir/__/__/__/modules/juce_data_structures/juce_data_structures.mm.o	570650ecf93b3497
+31	994	1781949211745411697	extras/Build/juceaide/CMakeFiles/juceaide.dir/__/juce_build_tools/juce_build_tools.cpp.o	4922d1d2c1b7ff25
+31	1030	1781949211745165108	extras/Build/juceaide/CMakeFiles/juceaide.dir/Main.cpp.o	d20deced5652fb42
+33	1136	1781949211746756395	extras/Build/juceaide/CMakeFiles/juceaide.dir/__/__/__/modules/juce_events/juce_events.mm.o	8192cbe8a387092e
+34	1788	1781949211747762002	extras/Build/juceaide/CMakeFiles/juceaide.dir/__/__/__/modules/juce_core/juce_core.mm.o	254ee110bbf1bc6f
+32	3326	1781949211746334719	extras/Build/juceaide/CMakeFiles/juceaide.dir/__/__/__/modules/juce_graphics/juce_graphics.mm.o	6b327790a887d79a
+32	3408	1781949211745989461	extras/Build/juceaide/CMakeFiles/juceaide.dir/__/__/__/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.o	1bbef206a4a24c5c
+31	5445	1781949211745559242	extras/Build/juceaide/CMakeFiles/juceaide.dir/__/__/__/modules/juce_gui_basics/juce_gui_basics.mm.o	212cc321f5e372f7
+5445	5601	1781949217159611437	extras/Build/juceaide/juceaide_artefacts/Custom/juceaide	d7b42680ee61c1ab
+3	35	1781952523543496359	/Volumes/X9-Mac-mini/src/swift/Swift_2026/VALHost/build/juce/tools/CMakeFiles/cmake.verify_globs	67a48ea092131196

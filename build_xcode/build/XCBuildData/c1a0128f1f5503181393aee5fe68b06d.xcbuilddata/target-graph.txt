@@ -1,0 +1,4 @@
+Target dependency graph (2 targets)
+Target 'VALHost' in project 'VALHost'
+➜ Explicit dependency on target 'ZERO_CHECK' in project 'VALHost'
+Target 'ZERO_CHECK' in project 'VALHost' (no dependencies)
