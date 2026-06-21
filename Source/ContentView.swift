@@ -277,7 +277,7 @@ struct SlotRow: View {
             }
             .buttonStyle(.plain)
             
-            // Edit button
+            // Edit button (plugin's native editor)
             Button(action: {
                 VALHostEngine.sharedInstance().showPluginEditor(atSlot: Int32(slotIndex))
             }) {
@@ -287,7 +287,20 @@ struct SlotRow: View {
             }
             .buttonStyle(.bordered)
             .disabled(!isLoaded)
-            
+            .help("Open the plugin's own editor window")
+
+            // Generic editor (JUCE sliders) — use if a plugin's own window misbehaves
+            Button(action: {
+                VALHostEngine.sharedInstance().showGenericPluginEditor(atSlot: Int32(slotIndex))
+            }) {
+                Text("G")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 26, height: 32)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!isLoaded)
+            .help("Open a generic slider editor (use if the plugin's own window crashes, e.g. Apple's Graphic EQ)")
+
             // Unload button
             Button(action: {
                 VALHostEngine.sharedInstance().unloadPlugin(atSlot: Int32(slotIndex))

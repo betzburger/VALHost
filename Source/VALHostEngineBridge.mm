@@ -144,7 +144,17 @@
     if (_audioEngine)
     {
         juce::MessageManager::callAsync([self, slotIndex]() {
-            if (self->_audioEngine) self->_audioEngine->showPluginEditor(slotIndex);
+            if (self->_audioEngine) self->_audioEngine->showPluginEditor(slotIndex, false);
+        });
+    }
+}
+
+- (void)showGenericPluginEditorAtSlot:(int)slotIndex
+{
+    if (_audioEngine)
+    {
+        juce::MessageManager::callAsync([self, slotIndex]() {
+            if (self->_audioEngine) self->_audioEngine->showPluginEditor(slotIndex, true);
         });
     }
 }

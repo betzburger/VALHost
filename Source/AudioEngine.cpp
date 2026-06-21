@@ -199,14 +199,20 @@ bool AudioEngine::loadPlugin (int slotIndex, const juce::PluginDescription& desc
     if (instance == nullptr)
         return false;
 
-    // Configure sample rate / block size only, leaving the plugin's own channel
-    // layout intact. NOTE: do NOT call setPlayConfigDetails() with getBusCount()
-    // here — its first two arguments are *channel* counts, not *bus* counts.
-    // Passing bus counts forces a wrong (mono) layout on stereo plugins, which
-    // fails internally and leaves the plugin in an inconsistent state (e.g. it
-    // crashes Apple's AUGraphicEQ editor). The AudioProcessorGraph applies the
-    // proper play config when it prepares the node.
+    // Configure sample rate / block size, leaving the plugin's own channel layout
+    // intact. NOTE: do NOT call setPlayConfigDetails() with getBusCount() here —
+    // its first two arguments are *channel* counts, not *bus* counts. Passing bus
+    // counts forces a wrong (mono) layout on stereo plugins.
     instance->setRateAndBufferSizeDetails (sampleRate, blockSize);
+
+    // Fully initialise the plugin now, before its editor can ever be opened. For
+    // Audio Units, JUCE only calls AudioUnitInitialize() and builds the parameter
+    // list inside prepareToPlay() — so if we relied on the graph (which is only
+    // prepared once the audio device starts), an editor opened beforehand would
+    // read parameters from an uninitialised unit and crash on first draw. That is
+    // exactly what happens with Apple's Graphic EQ. prepareToPlay() starts with
+    // releaseResources(), so the graph re-preparing the node later is harmless.
+    instance->prepareToPlay (sampleRate, blockSize);
 
     // Add to graph
     activeNodes[slotIndex] = audioGraph->addNode (std::move (instance));
@@ -245,7 +251,7 @@ juce::String AudioEngine::getPluginName (int slotIndex) const
     return "Empty";
 }
 
-void AudioEngine::showPluginEditor (int slotIndex)
+void AudioEngine::showPluginEditor (int slotIndex, bool useGenericEditor)
 {
     if (slotIndex < 0 || slotIndex >= totalSlots)
         return;
@@ -260,17 +266,21 @@ void AudioEngine::showPluginEditor (int slotIndex)
     }
 
     auto* processor = activeNodes[slotIndex]->getProcessor();
-    if (processor->hasEditor())
+
+    std::unique_ptr<juce::AudioProcessorEditor> editor;
+    if (useGenericEditor)
+        // JUCE's own parameter UI — never touches the plugin's native view.
+        editor = std::make_unique<juce::GenericAudioProcessorEditor> (*processor);
+    else if (processor->hasEditor())
+        editor.reset (processor->createEditorIfNeeded());
+
+    if (editor != nullptr)
     {
-        std::unique_ptr<juce::AudioProcessorEditor> editor (processor->createEditorIfNeeded());
-        if (editor != nullptr)
-        {
-            activeWindows[slotIndex] = std::make_unique<PluginWindow> (
-                activeNodes[slotIndex].get(),
-                std::move (editor),
-                [this, slotIndex]() { hidePluginEditor (slotIndex); }
-            );
-        }
+        activeWindows[slotIndex] = std::make_unique<PluginWindow> (
+            activeNodes[slotIndex].get(),
+            std::move (editor),
+            [this, slotIndex]() { hidePluginEditor (slotIndex); }
+        );
     }
 }
 

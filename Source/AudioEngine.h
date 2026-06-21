@@ -143,8 +143,10 @@ public:
     bool isPluginLoaded (int slotIndex) const;
     juce::String getPluginName (int slotIndex) const;
 
-    // Plugin Editor Windows
-    void showPluginEditor (int slotIndex);
+    // Plugin Editor Windows. When useGenericEditor is true, JUCE's own slider-based
+    // GenericAudioProcessorEditor is shown instead of the plugin's native view —
+    // useful for plugins whose own editor misbehaves (e.g. Apple's AUGraphicEQ).
+    void showPluginEditor (int slotIndex, bool useGenericEditor = false);
     void hidePluginEditor (int slotIndex);
     bool isPluginEditorVisible (int slotIndex) const;
 
