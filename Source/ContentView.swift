@@ -120,27 +120,121 @@ class VALHostState: ObservableObject {
 }
 
 //==============================================================================
+// Shared, calibrated dBFS scale for the output meters.
+enum MeterScale {
+    static let minDb: Float = -60   // bottom of the meter
+    static let maxDb: Float = 6     // top — headroom above 0 dBFS so "over" is visible
+    static let yellowDb: Float = -12 // green -> yellow (approaching clipping)
+    static let redDb: Float = 0     // yellow -> red (0 dBFS = clipping / over)
+    static let marks: [Float] = [0, -6, -12, -24, -48]
+
+    static func fraction(forDb db: Float) -> CGFloat {
+        CGFloat(max(0, min(1, (db - minDb) / (maxDb - minDb))))
+    }
+
+    static func db(forLinear v: Float) -> Float {
+        v <= 0.0000001 ? -120 : 20 * log10(v)
+    }
+
+    static func color(forDb db: Float) -> Color {
+        if db >= redDb { return Color(red: 0.90, green: 0.16, blue: 0.13) }
+        if db >= yellowDb { return Color(red: 0.95, green: 0.82, blue: 0.12) }
+        return Color(red: 0.16, green: 0.78, blue: 0.27)
+    }
+}
+
+//==============================================================================
+// A single channel bar: fills bottom-up on the dBFS scale, coloured by fixed
+// zones (green / yellow near clipping / red at and above 0 dBFS).
 struct VerticalLevelMeter: View {
     var val: Float
-    
+
+    private var zonedGradient: LinearGradient {
+        let y = MeterScale.fraction(forDb: MeterScale.yellowDb)
+        let r = MeterScale.fraction(forDb: MeterScale.redDb)
+        let green = Color(red: 0.16, green: 0.78, blue: 0.27)
+        let yellow = Color(red: 0.95, green: 0.82, blue: 0.12)
+        let red = Color(red: 0.90, green: 0.16, blue: 0.13)
+        return LinearGradient(stops: [
+            .init(color: green, location: 0),
+            .init(color: green, location: y - 0.001),
+            .init(color: yellow, location: y),
+            .init(color: yellow, location: r - 0.001),
+            .init(color: red, location: r),
+            .init(color: red, location: 1),
+        ], startPoint: .bottom, endPoint: .top)
+    }
+
     var body: some View {
         GeometryReader { geometry in
+            let fillH = MeterScale.fraction(forDb: MeterScale.db(forLinear: val)) * geometry.size.height
             ZStack(alignment: .bottom) {
-                // Background
                 RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.black.opacity(0.4))
-                
-                // Active bar with gradient
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(
-                        LinearGradient(
-                            gradient: Gradient(colors: [.red, .orange, .green]),
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
+                    .fill(Color.black.opacity(0.55))
+
+                // Show the zoned ladder only up to the current level.
+                zonedGradient
+                    .mask(
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            Rectangle().frame(height: max(0, fillH))
+                        }
                     )
-                    .frame(height: max(0, min(CGFloat(val) * geometry.size.height, geometry.size.height)))
+                    .clipShape(RoundedRectangle(cornerRadius: 2))
             }
+        }
+    }
+}
+
+//==============================================================================
+// Stereo output meter: two zoned bars, a calibrated dB scale, and a numeric
+// peak readout.
+struct OutputMeterView: View {
+    var leftPeak: Float
+    var rightPeak: Float
+
+    private let meterHeight: CGFloat = 140
+
+    var body: some View {
+        let peakDb = max(MeterScale.db(forLinear: leftPeak),
+                         MeterScale.db(forLinear: rightPeak))
+
+        VStack(spacing: 4) {
+            Text("METER")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(.gray)
+
+            HStack(alignment: .center, spacing: 4) {
+                HStack(spacing: 3) {
+                    VerticalLevelMeter(val: leftPeak)
+                    VerticalLevelMeter(val: rightPeak)
+                }
+                .frame(width: 22, height: meterHeight)
+
+                // Calibrated dBFS scale
+                ZStack {
+                    ForEach(MeterScale.marks, id: \.self) { mark in
+                        Text(String(format: "%.0f", mark))
+                            .font(.system(size: 7, design: .monospaced))
+                            .foregroundColor(mark >= 0 ? .red.opacity(0.8) : .gray.opacity(0.6))
+                            .offset(y: (0.5 - MeterScale.fraction(forDb: mark)) * meterHeight)
+                    }
+                }
+                .frame(width: 16, height: meterHeight)
+            }
+
+            HStack(spacing: 3) {
+                Text("L").frame(width: 9)
+                Text("R").frame(width: 9)
+            }
+            .font(.system(size: 7, weight: .bold))
+            .foregroundColor(.gray.opacity(0.7))
+            .frame(width: 22)
+
+            // Numeric peak readout, coloured by zone
+            Text(peakDb <= MeterScale.minDb ? "–∞ dB" : String(format: "%+.1f dB", peakDb))
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundColor(MeterScale.color(forDb: peakDb))
         }
     }
 }
@@ -520,19 +614,8 @@ struct MixerStripView: View {
                 }
                 .frame(width: 44)
 
-                // Peak Level Meter
-                VStack(spacing: 4) {
-                    Text("METER")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(.gray)
-                    
-                    HStack(spacing: 3) {
-                        VerticalLevelMeter(val: state.leftPeak)
-                        VerticalLevelMeter(val: state.rightPeak)
-                    }
-                    .frame(width: 24, height: 140)
-                    .padding(.vertical, 2)
-                }
+                // Peak Level Meter (professional dBFS metering with calibrated scale)
+                OutputMeterView(leftPeak: state.leftPeak, rightPeak: state.rightPeak)
                 
                 Spacer()
             }
