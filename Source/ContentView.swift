@@ -1104,7 +1104,7 @@ struct HelpView: View {
                                startPoint: .top, endPoint: .bottom)
             )
         }
-        .frame(width: 680, height: 760)
+        .frame(width: 680, height: 700)
     }
 
     // MARK: Styled building blocks
