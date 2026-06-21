@@ -104,8 +104,14 @@ public:
 
     void closeButtonPressed() override
     {
+        // This is called from inside the window, and onClose() destroys this very
+        // window. Deleting it synchronously here is a use-after-free that crashes
+        // on some plugins. Hide it now for responsiveness and defer the teardown
+        // until we have safely returned from this callback.
+        setVisible (false);
+
         if (onClose)
-            onClose();
+            juce::MessageManager::callAsync (onClose);
     }
 
 private:
@@ -143,10 +149,10 @@ public:
     bool isPluginLoaded (int slotIndex) const;
     juce::String getPluginName (int slotIndex) const;
 
-    // Plugin Editor Windows. When useGenericEditor is true, JUCE's own slider-based
-    // GenericAudioProcessorEditor is shown instead of the plugin's native view —
-    // useful for plugins whose own editor misbehaves (e.g. Apple's AUGraphicEQ).
-    void showPluginEditor (int slotIndex, bool useGenericEditor = false);
+    // Plugin Editor Windows. Shows the plugin's native view, but transparently
+    // falls back to JUCE's generic slider editor for plugins whose native view
+    // would crash (see shouldUseGenericEditor) or that have no editor of their own.
+    void showPluginEditor (int slotIndex);
     void hidePluginEditor (int slotIndex);
     bool isPluginEditorVisible (int slotIndex) const;
 
@@ -208,9 +214,46 @@ private:
     // Open plugin editor windows
     std::unique_ptr<PluginWindow> activeWindows[totalSlots];
 
+    // Whether the editor open in each slot is the plugin's native view (true) or
+    // JUCE's generic editor (false). Only native views get crash-sentinel
+    // protection when they are torn down.
+    bool editorIsNative[totalSlots] = {};
+
     // Helper to get cached scanned list file
     juce::File getDeadMansPedalFile();
     juce::File getSavedPluginListFile();
+
+    //==============================================================================
+    // Crash-safe plugin editors.
+    //
+    // Some plugins' native editor views crash the host on first draw and the crash
+    // cannot be caught (it happens deep inside AppKit's draw cycle), so we must
+    // decide *before* opening whether to show the native view or fall back to
+    // JUCE's generic slider editor. We know the answer from two sources:
+    //   1. A built-in seed list of identifiers we have confirmed to crash (shipped
+    //      with the app, so users never start from zero).
+    //   2. A self-learning list: before opening an unverified native view we write
+    //      its identifier to a sentinel file; a timer clears it once the view has
+    //      drawn safely. If the app crashed first, the sentinel survives and on the
+    //      next launch that identifier is promoted to the learned list for good.
+
+    // Populate crashingEditorIds from the seed list, the persisted learned list,
+    // and any sentinel left over from a crash in the previous session.
+    void loadCrashKnowledge();
+
+    // True if this plugin's native editor is known to crash and must be avoided.
+    bool shouldUseGenericEditor (juce::AudioProcessor* processor) const;
+
+    // Add an identifier to the learned list (in memory and on disk).
+    void rememberCrashingEditor (const juce::String& identifier);
+
+    static juce::File getLearnedCrashFile();
+    static juce::File getPendingEditorFile();
+    static void armCrashSentinel (const juce::String& identifier);
+    static void disarmCrashSentinel (const juce::String& identifier);
+
+    // Union of the built-in seed list and the learned list.
+    juce::StringArray crashingEditorIds;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioEngine)
 };

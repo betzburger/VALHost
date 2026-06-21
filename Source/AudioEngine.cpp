@@ -18,6 +18,10 @@ void AudioEngine::init()
     // Ensure parent directory exists for support files
     getSavedPluginListFile().getParentDirectory().createDirectory();
 
+    // Load built-in + learned knowledge of which plugin editors crash, and promote
+    // any crash from the previous session (left-over sentinel) into the learned list.
+    loadCrashKnowledge();
+
     // Try to load cached plugin list
     auto listFile = getSavedPluginListFile();
     if (listFile.existsAsFile())
@@ -226,7 +230,9 @@ void AudioEngine::unloadPlugin (int slotIndex)
     if (slotIndex < 0 || slotIndex >= totalSlots)
         return;
 
-    activeWindows[slotIndex] = nullptr;
+    // Tear the editor window down through hidePluginEditor so it gets the same
+    // crash-sentinel protection as a normal close.
+    hidePluginEditor (slotIndex);
 
     if (activeNodes[slotIndex] != nullptr)
     {
@@ -251,7 +257,121 @@ juce::String AudioEngine::getPluginName (int slotIndex) const
     return "Empty";
 }
 
-void AudioEngine::showPluginEditor (int slotIndex, bool useGenericEditor)
+//==============================================================================
+namespace
+{
+    // Identifiers of plugins whose *native* editor view is known to crash the host.
+    // For Audio Units this string is the component identity (type/subtype/manufacturer)
+    // and is identical on every Mac, so it is safe to ship as built-in knowledge.
+    // Promote entries here from the learned list (crashing_editors.txt) as they are
+    // discovered during testing.
+    const char* const kKnownCrashingEditorSeed[] =
+    {
+        "AudioUnit:Effects/aufx,greq,appl",   // Apple AUGraphicEQ
+        "AudioUnit:Effects/aufx,bpas,appl",   // Apple AUBandpass
+        "AudioUnit:Effects/aufx,dcmp,appl",   // Apple AUDynamicsProcessor
+        "AudioUnit:Effects/aufx,dely,appl",   // Apple AUDelay
+        "AudioUnit:Effects/aufx,filt,appl",   // Apple AUFilter
+        "AudioUnit:Effects/aufx,hpas,appl",   // Apple AUHighpass
+        "AudioUnit:Effects/aufx,hshf,appl",   // Apple AUHighShelfFilter
+        "AudioUnit:Effects/aufx,lpas,appl",   // Apple AULowpass
+        "AudioUnit:Effects/aufx,lshf,appl",   // Apple AULowShelfFilter
+        "AudioUnit:Effects/aufx,mcmp,appl",   // Apple AUMultibandCompressor
+        "AudioUnit:Effects/aufx,pmeq,appl",   // Apple AUParametricEQ
+        "AudioUnit:Effects/aufx,raac,appl",   // Apple AURoundTripAAC (crashes on close)
+        "AudioUnit:Effects/aufx,lmtr,appl",   // Apple AUPeakLimiter
+    };
+
+    juce::String getEditorIdentifier (juce::AudioProcessor* processor)
+    {
+        if (auto* instance = dynamic_cast<juce::AudioPluginInstance*> (processor))
+            return instance->getPluginDescription().fileOrIdentifier;
+
+        return {};
+    }
+}
+
+juce::File AudioEngine::getLearnedCrashFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+        .getChildFile ("Application Support/VALHost/crashing_editors.txt");
+}
+
+juce::File AudioEngine::getPendingEditorFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+        .getChildFile ("Application Support/VALHost/pending_editor.txt");
+}
+
+void AudioEngine::armCrashSentinel (const juce::String& identifier)
+{
+    if (identifier.isEmpty())
+        return;
+
+    auto f = getPendingEditorFile();
+    f.getParentDirectory().createDirectory();
+    f.replaceWithText (identifier);
+}
+
+void AudioEngine::disarmCrashSentinel (const juce::String& identifier)
+{
+    auto f = getPendingEditorFile();
+
+    // Only clear the sentinel if it still refers to the editor we opened — another
+    // editor opened in the meantime may have armed its own.
+    if (f.existsAsFile() && f.loadFileAsString().trim() == identifier)
+        f.deleteFile();
+}
+
+void AudioEngine::rememberCrashingEditor (const juce::String& identifier)
+{
+    if (identifier.isEmpty() || crashingEditorIds.contains (identifier))
+        return;
+
+    crashingEditorIds.add (identifier);
+
+    auto f = getLearnedCrashFile();
+    f.getParentDirectory().createDirectory();
+    f.appendText (identifier + juce::newLine);
+}
+
+void AudioEngine::loadCrashKnowledge()
+{
+    crashingEditorIds.clearQuick();
+
+    // 1. Built-in seed list (ships with the app).
+    for (auto* id : kKnownCrashingEditorSeed)
+        crashingEditorIds.add (id);
+
+    // 2. A leftover sentinel means the previous session crashed while opening that
+    //    editor — promote it to the learned list permanently.
+    auto pending = getPendingEditorFile();
+    if (pending.existsAsFile())
+    {
+        auto crashed = pending.loadFileAsString().trim();
+        pending.deleteFile();
+        rememberCrashingEditor (crashed);
+    }
+
+    // 3. Previously learned identifiers.
+    auto learned = getLearnedCrashFile();
+    if (learned.existsAsFile())
+    {
+        juce::StringArray lines;
+        lines.addLines (learned.loadFileAsString());
+
+        for (auto& line : lines)
+            if (line.trim().isNotEmpty())
+                crashingEditorIds.addIfNotAlreadyThere (line.trim());
+    }
+}
+
+bool AudioEngine::shouldUseGenericEditor (juce::AudioProcessor* processor) const
+{
+    return crashingEditorIds.contains (getEditorIdentifier (processor));
+}
+
+void AudioEngine::showPluginEditor (int slotIndex)
 {
     if (slotIndex < 0 || slotIndex >= totalSlots)
         return;
@@ -266,22 +386,43 @@ void AudioEngine::showPluginEditor (int slotIndex, bool useGenericEditor)
     }
 
     auto* processor = activeNodes[slotIndex]->getProcessor();
+    const juce::String pluginId = getEditorIdentifier (processor);
 
     std::unique_ptr<juce::AudioProcessorEditor> editor;
-    if (useGenericEditor)
-        // JUCE's own parameter UI — never touches the plugin's native view.
-        editor = std::make_unique<juce::GenericAudioProcessorEditor> (*processor);
-    else if (processor->hasEditor())
+    bool sentinelArmed = false;
+
+    if (! shouldUseGenericEditor (processor) && processor->hasEditor())
+    {
+        // We have not verified this native view yet. Arm the crash sentinel so that
+        // if drawing it kills the app, the next launch learns to avoid it.
+        armCrashSentinel (pluginId);
         editor.reset (processor->createEditorIfNeeded());
 
-    if (editor != nullptr)
-    {
-        activeWindows[slotIndex] = std::make_unique<PluginWindow> (
-            activeNodes[slotIndex].get(),
-            std::move (editor),
-            [this, slotIndex]() { hidePluginEditor (slotIndex); }
-        );
+        if (editor != nullptr)
+            sentinelArmed = true;
+        else
+            disarmCrashSentinel (pluginId); // no native view after all
     }
+
+    // Fall back to JUCE's generic editor whenever there is no usable native view,
+    // or when we deliberately avoid a crash-prone one. This guarantees an editor
+    // always opens without ever crashing the host.
+    if (editor == nullptr)
+        editor = std::make_unique<juce::GenericAudioProcessorEditor> (*processor);
+
+    activeWindows[slotIndex] = std::make_unique<PluginWindow> (
+        activeNodes[slotIndex].get(),
+        std::move (editor),
+        [this, slotIndex]() { hidePluginEditor (slotIndex); }
+    );
+
+    editorIsNative[slotIndex] = sentinelArmed;
+
+    // The native view survived creation and will draw on the next run-loop cycle.
+    // Clear the sentinel after a short delay; if the app crashes first, it persists
+    // and the plugin is learned as a crasher on the next launch.
+    if (sentinelArmed)
+        juce::Timer::callAfterDelay (2000, [pluginId]() { AudioEngine::disarmCrashSentinel (pluginId); });
 }
 
 void AudioEngine::hidePluginEditor (int slotIndex)
@@ -289,7 +430,24 @@ void AudioEngine::hidePluginEditor (int slotIndex)
     if (slotIndex < 0 || slotIndex >= totalSlots)
         return;
 
+    if (activeWindows[slotIndex] == nullptr)
+        return;
+
+    // A few plugins crash while their *native* editor is torn down (they load and
+    // run fine, then die on close). Arm the crash sentinel around the teardown so
+    // this is learned just like a crash on open; we disarm shortly after if it
+    // closes cleanly. Generic editors are safe, so they are not armed.
+    juce::String pluginId;
+    if (editorIsNative[slotIndex] && activeNodes[slotIndex] != nullptr)
+        pluginId = getEditorIdentifier (activeNodes[slotIndex]->getProcessor());
+
+    armCrashSentinel (pluginId);
+
+    editorIsNative[slotIndex] = false;
     activeWindows[slotIndex] = nullptr;
+
+    if (pluginId.isNotEmpty())
+        juce::Timer::callAfterDelay (2000, [pluginId]() { AudioEngine::disarmCrashSentinel (pluginId); });
 }
 
 bool AudioEngine::isPluginEditorVisible (int slotIndex) const

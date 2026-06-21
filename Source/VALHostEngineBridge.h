@@ -22,7 +22,6 @@
 - (BOOL)isPluginLoadedAtSlot:(int)slotIndex;
 - (NSString*)getPluginNameAtSlot:(int)slotIndex;
 - (void)showPluginEditorAtSlot:(int)slotIndex;
-- (void)showGenericPluginEditorAtSlot:(int)slotIndex;
 - (void)hidePluginEditorAtSlot:(int)slotIndex;
 
 // Master controls
