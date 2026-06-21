@@ -34,6 +34,19 @@ void AudioEngine::init()
     // Setup Audio Graph
     audioGraph = std::make_unique<juce::AudioProcessorGraph>();
     
+    double sampleRate = 44100.0;
+    int blockSize = 512;
+    int numInputs = 2;
+    int numOutputs = 2;
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+    {
+        sampleRate = device->getCurrentSampleRate();
+        blockSize = device->getCurrentBufferSizeSamples();
+        numInputs = std::max (2, device->getActiveInputChannels().countNumberOfSetBits());
+        numOutputs = std::max (2, device->getActiveOutputChannels().countNumberOfSetBits());
+    }
+    audioGraph->setPlayConfigDetails (numInputs, numOutputs, sampleRate, blockSize);
+    
     // Add IO Nodes
     using AudioGraphIOProcessor = juce::AudioProcessorGraph::AudioGraphIOProcessor;
     audioInputNode  = audioGraph->addNode (std::make_unique<AudioGraphIOProcessor> (AudioGraphIOProcessor::audioInputNode));
@@ -440,16 +453,21 @@ void AudioEngine::changeListenerCallback (juce::ChangeBroadcaster* /*source*/)
     // Handle sample rate or buffer size changes
     double sampleRate = 44100.0;
     int blockSize = 512;
+    int numInputs = 2;
+    int numOutputs = 2;
     if (auto* device = deviceManager.getCurrentAudioDevice())
     {
         sampleRate = device->getCurrentSampleRate();
         blockSize = device->getCurrentBufferSizeSamples();
+        numInputs = std::max (2, device->getActiveInputChannels().countNumberOfSetBits());
+        numOutputs = std::max (2, device->getActiveOutputChannels().countNumberOfSetBits());
     }
     
     if (audioGraph)
     {
-        audioGraph->setPlayConfigDetails (audioGraph->getBusCount(true), audioGraph->getBusCount(false), sampleRate, blockSize);
+        audioGraph->setPlayConfigDetails (numInputs, numOutputs, sampleRate, blockSize);
         audioGraph->prepareToPlay (sampleRate, blockSize);
+        updateGraphConnections();
     }
 }
 

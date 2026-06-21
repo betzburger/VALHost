@@ -66,9 +66,12 @@ set_target_properties(VALHost PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Source/Info.plist"
 )
 
-# Tell the compiler where to find headers, and explicitly pass the bridging header to swiftc for Ninja compatibility
+# Tell the compiler where to find headers, and explicitly pass the bridging header to swiftc.
+# NOTE: We intentionally do NOT pass an explicit -sdk here. The Swift sources must build
+# against the same SDK as the C++/Obj-C++ sources (Xcode's active SDK); hard-coding the
+# CommandLineTools SDK caused a cross-SDK mismatch in the Xcode build.
 target_include_directories(VALHost PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Source")
-target_compile_options(VALHost PRIVATE $<$<COMPILE_LANGUAGE:Swift>:-import-objc-header;${CMAKE_CURRENT_SOURCE_DIR}/Source/VALHost-Bridging-Header.h;-sdk;/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk>)
+target_compile_options(VALHost PRIVATE $<$<COMPILE_LANGUAGE:Swift>:-import-objc-header;${CMAKE_CURRENT_SOURCE_DIR}/Source/VALHost-Bridging-Header.h>)
 
 # Add weak framework link options for Metal and MetalKit directly to target link options to bypass CMake's library resolution
 target_link_options(VALHost PRIVATE

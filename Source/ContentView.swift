@@ -27,6 +27,8 @@ class VALHostState: ObservableObject {
     @Published var effectNames: [String] = Array(repeating: "Select Effect...", count: 4)
     @Published var isInstrumentLoaded: Bool = false
     @Published var isEffectLoaded: [Bool] = Array(repeating: false, count: 4)
+    @Published var selectedSlot: Int? = 0
+    @Published var selectedPluginId: UUID? = nil
 
     // Plugin List
     @Published var plugins: [ScannedPlugin] = []
@@ -51,6 +53,7 @@ class VALHostState: ObservableObject {
         self.plugins = temp
         self.instruments = temp.filter { $0.isInstrument }
         self.effects = temp.filter { !$0.isInstrument }
+        self.selectedPluginId = nil
     }
 
     func refreshSlots() {
@@ -227,46 +230,156 @@ struct PianoKeyView: View {
 }
 
 //==============================================================================
-struct EffectSlotRow: View {
-    let index: Int
+//==============================================================================
+struct SlotRow: View {
+    let slotIndex: Int
+    let label: String
+    let pluginName: String
+    let isLoaded: Bool
     @ObservedObject var state: VALHostState
-
+    
     var body: some View {
-        HStack(spacing: 4) {
-            Menu {
-                Button("[None]") {
-                    VALHostEngine.sharedInstance().unloadPlugin(atSlot: Int32(index + 1))
-                    state.refreshSlots()
+        let isSelected = state.selectedSlot == slotIndex
+        let displayPluginName = isLoaded ? pluginName : "<empty>"
+        
+        HStack(spacing: 6) {
+            // Clickable main body
+            Button(action: {
+                state.selectedSlot = slotIndex
+            }) {
+                HStack(spacing: 8) {
+                    // Prefix tag
+                    Text(label)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.teal)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(RoundedRectangle(cornerRadius: 3).fill(Color.teal.opacity(0.15)))
+                    
+                    Text(displayPluginName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(isLoaded ? .white : .gray)
+                        .lineLimit(1)
+                    
+                    Spacer()
                 }
-                ForEach(state.effects) { plugin in
-                    Button("\(plugin.name) (\(plugin.format))") {
-                        state.loadPlugin(slot: index + 1, name: plugin.name)
-                    }
-                }
-            } label: {
-                Text(state.effectNames[index])
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(1)
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity)
+                .frame(height: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected ? Color.teal.opacity(0.12) : Color.gray.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isSelected ? Color.teal : Color.gray.opacity(0.15), lineWidth: isSelected ? 1.5 : 1.0)
+                )
             }
-            .menuStyle(.borderlessButton)
-            .frame(height: 28)
-            .padding(.horizontal, 6)
-            .background(RoundedRectangle(cornerRadius: 4).fill(Color.gray.opacity(0.15)))
-
-            Button("E") {
-                VALHostEngine.sharedInstance().showPluginEditor(atSlot: Int32(index + 1))
+            .buttonStyle(.plain)
+            
+            // Edit button
+            Button(action: {
+                VALHostEngine.sharedInstance().showPluginEditor(atSlot: Int32(slotIndex))
+            }) {
+                Text("E")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 26, height: 32)
             }
-            .disabled(!state.isEffectLoaded[index])
-            .frame(width: 24, height: 28)
             .buttonStyle(.bordered)
-
-            Button("X") {
-                VALHostEngine.sharedInstance().unloadPlugin(atSlot: Int32(index + 1))
+            .disabled(!isLoaded)
+            
+            // Unload button
+            Button(action: {
+                VALHostEngine.sharedInstance().unloadPlugin(atSlot: Int32(slotIndex))
                 state.refreshSlots()
+            }) {
+                Text("X")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 26, height: 32)
             }
-            .disabled(!state.isEffectLoaded[index])
-            .frame(width: 24, height: 28)
             .buttonStyle(.bordered)
+            .disabled(!isLoaded)
+        }
+    }
+}
+
+//==============================================================================
+struct CustomVerticalFader: View {
+    @Binding var value: Double // Range 0.0 to 1.25
+    let onChanged: (Double) -> Void
+    
+    var body: some View {
+        GeometryReader { geometry in
+            let height = geometry.size.height
+            let faderRange: ClosedRange<Double> = 0.0...1.25
+            
+            // Calculate handle Y offset
+            let normVal = CGFloat((value - faderRange.lowerBound) / (faderRange.upperBound - faderRange.lowerBound))
+            let handleHeight: CGFloat = 18
+            let trackHeight = max(0, height - handleHeight)
+            let yOffset = trackHeight * (1.0 - normVal)
+            
+            ZStack(alignment: .top) {
+                // Fader Track background
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color(white: 0.12))
+                    .frame(width: 8, height: height)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 3)
+                            .stroke(Color.black.opacity(0.5), lineWidth: 1)
+                    )
+                
+                // Track highlight (from bottom to current value)
+                VStack {
+                    Spacer()
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.teal, Color.teal.opacity(0.6)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .frame(width: 6, height: max(0, trackHeight * normVal))
+                }
+                .padding(.bottom, handleHeight / 2)
+                .frame(height: height)
+                
+                // Fader Handle (Knob)
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(white: 0.45), Color(white: 0.28), Color(white: 0.18)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color.black, lineWidth: 1.2)
+                    )
+                    .overlay(
+                        // Center horizontal stripe on handle
+                        Rectangle()
+                            .fill(Color.teal)
+                            .frame(height: 2)
+                    )
+                    .shadow(color: Color.black.opacity(0.6), radius: 2, x: 0, y: 1.5)
+                    .frame(width: 26, height: handleHeight)
+                    .offset(y: yOffset)
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { gesture in
+                                let dragY = gesture.location.y - (handleHeight / 2)
+                                let clampedY = max(0, min(dragY, trackHeight))
+                                let percent = trackHeight > 0 ? (1.0 - (clampedY / trackHeight)) : 0.0
+                                let val = faderRange.lowerBound + Double(percent) * (faderRange.upperBound - faderRange.lowerBound)
+                                self.value = val
+                                onChanged(val)
+                            }
+                    )
+            }
+            .frame(width: 26)
         }
     }
 }
@@ -276,12 +389,20 @@ struct TopBarView: View {
     @ObservedObject var state: VALHostState
     let onLoad: () -> Void
     let onSave: () -> Void
-    
     var body: some View {
-        HStack {
-            Text("VALHost")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundColor(.teal)
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        
+        return HStack {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("VALHost")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(.teal)
+                
+                Text("v\(appVersion) (Build \(appBuild))  •  © Peter Betz  •  Powered by JUCE")
+                    .font(.system(size: 9))
+                    .foregroundColor(.gray.opacity(0.6))
+            }
             
             Spacer()
             
@@ -310,70 +431,47 @@ struct MixerStripView: View {
     @ObservedObject var state: VALHostState
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             Text("CHANNEL STRIP")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.teal)
                 .padding(.top, 4)
 
-            // Instrument Slot
-            VStack(alignment: .leading, spacing: 4) {
-                Text("INSTRUMENT")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(.gray)
+            // Slots (Instrument + Effects)
+            VStack(spacing: 8) {
+                // Instrument Slot (Index 0)
+                SlotRow(
+                    slotIndex: 0,
+                    label: "INST",
+                    pluginName: state.instrumentName,
+                    isLoaded: state.isInstrumentLoaded,
+                    state: state
+                )
                 
-                HStack(spacing: 4) {
-                    Menu {
-                        Button("[None]") {
-                            VALHostEngine.sharedInstance().unloadPlugin(atSlot: 0)
-                            state.refreshSlots()
-                        }
-                        ForEach(state.instruments) { plugin in
-                            Button("\(plugin.name) (\(plugin.format))") {
-                                state.loadPlugin(slot: 0, name: plugin.name)
-                            }
-                        }
-                    } label: {
-                        Text(state.instrumentName)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .lineLimit(1)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .frame(height: 28)
-                    .padding(.horizontal, 6)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.gray.opacity(0.15)))
-
-                    Button("E") {
-                        VALHostEngine.sharedInstance().showPluginEditor(atSlot: 0)
-                    }
-                    .disabled(!state.isInstrumentLoaded)
-                    .frame(width: 24, height: 28)
-                    .buttonStyle(.bordered)
-
-                    Button("X") {
-                        VALHostEngine.sharedInstance().unloadPlugin(atSlot: 0)
-                        state.refreshSlots()
-                    }
-                    .disabled(!state.isInstrumentLoaded)
-                    .frame(width: 24, height: 28)
-                    .buttonStyle(.bordered)
-                }
-            }
-            .padding(.horizontal, 8)
-
-            // Effects Slots
-            VStack(alignment: .leading, spacing: 4) {
+                Divider()
+                    .background(Color.gray.opacity(0.15))
+                    .padding(.vertical, 2)
+                
                 Text("EFFECTS")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.gray)
-
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                
+                // Effect Slots (Index 1 to 4)
                 ForEach(0..<4) { i in
-                    EffectSlotRow(index: i, state: state)
+                    SlotRow(
+                        slotIndex: i + 1,
+                        label: "FX \(i + 1)",
+                        pluginName: state.effectNames[i],
+                        isLoaded: state.isEffectLoaded[i],
+                        state: state
+                    )
                 }
             }
             .padding(.horizontal, 8)
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 12)
 
             // Mute / Solo
             HStack(spacing: 8) {
@@ -404,29 +502,51 @@ struct MixerStripView: View {
             .padding(.horizontal, 8)
 
             // Fader + Meter Row
-            HStack(spacing: 12) {
-                // Vertical Fader
-                Slider(value: $state.volume, in: 0.0...1.25, onEditingChanged: { _ in
-                    VALHostEngine.sharedInstance().setVolume(Float(state.volume))
-                })
-                .controlSize(.small)
-                .rotationEffect(.degrees(-90))
-                .frame(width: 40, height: 160)
+            HStack(spacing: 16) {
+                Spacer()
+                
+                // Custom Vertical Fader (Teal Highlight, 3D Handle, Vertical Drag)
+                VStack(spacing: 4) {
+                    Text(String(format: "%.1f dB", faderValueToDb(state.volume)))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.gray)
+                    
+                    CustomVerticalFader(value: $state.volume) { val in
+                        VALHostEngine.sharedInstance().setVolume(Float(val))
+                    }
+                    .frame(height: 140)
+                }
+                .frame(width: 44)
 
                 // Peak Level Meter
-                HStack(spacing: 2) {
-                    VerticalLevelMeter(val: state.leftPeak)
-                    VerticalLevelMeter(val: state.rightPeak)
+                VStack(spacing: 4) {
+                    Text("METER")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.gray)
+                    
+                    HStack(spacing: 3) {
+                        VerticalLevelMeter(val: state.leftPeak)
+                        VerticalLevelMeter(val: state.rightPeak)
+                    }
+                    .frame(width: 24, height: 140)
+                    .padding(.vertical, 2)
                 }
-                .frame(width: 24, height: 140)
-                .padding(.vertical, 10)
+                
+                Spacer()
             }
-            .frame(height: 160)
+            .frame(height: 165)
         }
-        .frame(width: 230)
+        .frame(width: 420)
         .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.08)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.06)))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.15), lineWidth: 1.5))
+    }
+    
+    // Helper to translate slider/fader range (0.0 to 1.25) to a decibel representation
+    private func faderValueToDb(_ val: Double) -> Double {
+        if val <= 0.0001 { return -96.0 }
+        let db = 20.0 * log10(val)
+        return db
     }
 }
 
@@ -444,6 +564,11 @@ struct SidebarView: View {
                 .textFieldStyle(.roundedBorder)
                 .padding(.horizontal, 4)
 
+            Text("Double-click to load a plugin into the selected effects slot")
+                .font(.system(size: 10))
+                .foregroundColor(.gray.opacity(0.7))
+                .padding(.bottom, 2)
+
             List {
                 let filtered = state.plugins.filter {
                     state.searchText.isEmpty ? true : (
@@ -452,6 +577,7 @@ struct SidebarView: View {
                     )
                 }
                 ForEach(filtered) { plugin in
+                    let isPluginSelected = state.selectedPluginId == plugin.id
                     HStack {
                         Text(plugin.name)
                             .font(.system(size: 12))
@@ -464,12 +590,42 @@ struct SidebarView: View {
                             .padding(.vertical, 2)
                             .background(RoundedRectangle(cornerRadius: 3).fill(Color.teal.opacity(0.1)))
                     }
-                    .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(isPluginSelected ? Color.teal.opacity(0.15) : Color.clear)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(isPluginSelected ? Color.teal : Color.clear, lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) {
+                        if let slot = state.selectedSlot {
+                            if slot == 0 && !plugin.isInstrument {
+                                state.statusMessage = "Selected slot (Instrument) only accepts Instruments."
+                            } else if slot > 0 && plugin.isInstrument {
+                                state.statusMessage = "Selected slot (Effects) only accepts Effect plugins."
+                            } else {
+                                state.loadPlugin(slot: slot, name: plugin.name)
+                                state.statusMessage = "Loaded \(plugin.name) into selected slot."
+                                state.selectedPluginId = nil
+                            }
+                        } else {
+                            state.statusMessage = "Please select an Instrument or Effect slot first."
+                        }
+                    }
+                    .simultaneousGesture(TapGesture().onEnded {
+                        state.selectedPluginId = plugin.id
+                    })
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
                 }
             }
             .cornerRadius(4)
             .listStyle(.inset)
-            .frame(height: 380)
+            .frame(height: 360)
 
             Button(action: {
                 state.triggerScan()
@@ -507,10 +663,10 @@ struct PianoKeyboardView: View {
                     PianoKeyView(note: note, isBlack: false, activeTouches: $state.activeTouches)
                 }
             }
-            .frame(width: 548, height: 75)
+            .frame(width: 828, height: 75)
 
             // Black Keys: 4 Octaves -> 20 black keys
-            let keyWidth: CGFloat = 548.0 / 29.0
+            let keyWidth: CGFloat = 828.0 / 29.0
             let blackKeyWidth: CGFloat = keyWidth * 0.6
             
             // Map of (note, divider index)
@@ -527,7 +683,7 @@ struct PianoKeyboardView: View {
                     .offset(x: item.dividerIndex * keyWidth - blackKeyWidth/2)
             }
         }
-        .frame(width: 548, height: 75)
+        .frame(width: 828, height: 75)
         .background(Color.black)
         .cornerRadius(4)
         .padding(.horizontal, 16)
@@ -578,7 +734,7 @@ struct ContentView: View {
 
             StatusBarView(state: state)
         }
-        .frame(width: 580, height: 660)
+        .frame(minWidth: 860, maxWidth: 860, minHeight: 740, maxHeight: 740)
         .background(
             LinearGradient(
                 gradient: Gradient(colors: [Color(white: 0.08), Color(white: 0.12)]),

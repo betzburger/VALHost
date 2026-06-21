@@ -1,0 +1,31 @@
+# ----------------------------------------------------------------------------
+# VALHost — only source is tracked. Everything below is generated build output.
+# ----------------------------------------------------------------------------
+
+# CMake build trees (the Xcode project lives in build_xcode/ and is regenerated
+# from CMakeLists.txt via:  cmake -G Xcode -B build_xcode)
+build/
+build_xcode/
+
+# Generic CMake artefacts (in case configured elsewhere)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.cmake.stamp
+
+# Xcode user-specific state & derived data
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+
+# Build products
+*.o
+*.obj
+*.app
+*.swiftmodule
+*.swiftdeps
+*.swiftsourceinfo
+
+# macOS
+.DS_Store

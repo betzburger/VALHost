@@ -19,5 +19,6 @@ struct VALHostApp: App {
                 .navigationTitle("VALHost")
         }
         .windowStyle(.titleBar)
+        .windowResizability(.contentSize)
     }
 }
