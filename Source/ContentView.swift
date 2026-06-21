@@ -20,8 +20,7 @@ class VALHostState: ObservableObject {
     // Mixer State
     @Published var volume: Double = 1.0
     @Published var isMute: Bool = false
-    @Published var isSolo: Bool = false
-    
+
     // Slot Names
     @Published var instrumentName: String = "Select Instrument..."
     @Published var effectNames: [String] = Array(repeating: "Select Effect...", count: 4)
@@ -73,7 +72,6 @@ class VALHostState: ObservableObject {
         
         self.volume = Double(VALHostEngine.sharedInstance().getVolume())
         self.isMute = VALHostEngine.sharedInstance().getMute()
-        self.isSolo = VALHostEngine.sharedInstance().getSolo()
     }
 
     func loadPlugin(slot: Int, name: String) {
@@ -527,6 +525,7 @@ struct TopBarView: View {
     @ObservedObject var state: VALHostState
     let onLoad: () -> Void
     let onSave: () -> Void
+    let onHelp: () -> Void
     var body: some View {
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
         let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
@@ -558,6 +557,13 @@ struct TopBarView: View {
                 onSave()
             }
             .buttonStyle(.bordered)
+
+            Button(action: onHelp) {
+                Label("Help", systemImage: "questionmark.circle")
+            }
+            .buttonStyle(.bordered)
+            .tint(.teal)
+            .help("Open the VALHost user guide")
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
@@ -611,7 +617,7 @@ struct MixerStripView: View {
 
             Spacer(minLength: 12)
 
-            // Mute / Solo
+            // Mute
             HStack(spacing: 8) {
                 Button(action: {
                     state.isMute.toggle()
@@ -623,18 +629,6 @@ struct MixerStripView: View {
                         .frame(height: 26)
                 }
                 .tint(state.isMute ? .red : .gray)
-                .buttonStyle(.borderedProminent)
-
-                Button(action: {
-                    state.isSolo.toggle()
-                    VALHostEngine.sharedInstance().setSolo(state.isSolo)
-                }) {
-                    Text("SOLO")
-                        .font(.system(size: 11, weight: .bold))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 26)
-                }
-                .tint(state.isSolo ? .orange : .gray)
                 .buttonStyle(.borderedProminent)
             }
             .padding(.horizontal, 8)
@@ -856,13 +850,17 @@ struct StatusBarView: View {
 //==============================================================================
 struct ContentView: View {
     @StateObject private var state = VALHostState()
-    
+    @State private var showHelp = false
+
     // Polling timer (30 FPS)
     let timer = Timer.publish(every: 0.033, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 12) {
-            TopBarView(state: state, onLoad: loadSession, onSave: saveSession)
+            TopBarView(state: state,
+                       onLoad: loadSession,
+                       onSave: saveSession,
+                       onHelp: { showHelp = true })
 
             Divider()
                 .background(Color.gray.opacity(0.2))
@@ -892,6 +890,9 @@ struct ContentView: View {
         }
         .onReceive(timer) { _ in
             state.pollLevelsAndCpu()
+        }
+        .sheet(isPresented: $showHelp) {
+            HelpView(isPresented: $showHelp)
         }
     }
 
@@ -934,5 +935,232 @@ struct ContentView: View {
                 }
             }
         }
+    }
+}
+
+//==============================================================================
+// MARK: - Help / User Guide
+//==============================================================================
+struct HelpView: View {
+    @Binding var isPresented: Bool
+
+    private let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    private let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header bar
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "questionmark.circle.fill")
+                    .foregroundColor(.teal)
+                Text("VALHost — User Guide")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(.teal)
+                Spacer()
+                Button("Done") { isPresented = false }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(Color(white: 0.10))
+
+            Divider().background(Color.gray.opacity(0.3))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+
+                    para("VALHost is a lightweight audio plug-in host for macOS. It builds a single stereo channel strip: one instrument slot followed by four effect slots, a level fader with metering, and a stereo output. You can use it to play software instruments from a MIDI keyboard, or to run live or system audio through a chain of effect plug-ins.")
+
+                    // 1 ---------------------------------------------------------
+                    section("1.  How Audio Flows Through VALHost")
+                    para("The signal path is a simple, fixed left-to-right chain:")
+                    mono("[ Instrument  OR  Audio Input ]  →  FX 1  →  FX 2  →  FX 3  →  FX 4  →  Fader  →  Audio Output")
+                    bullet("**Source.** If a plug-in is loaded in the **INST** slot, it becomes the sound source and is played by MIDI. If the instrument slot is empty, the **audio input** (your selected input device) becomes the source instead.")
+                    bullet("**Effects.** Only loaded effect slots are active; the signal passes through them in order (FX 1 → FX 4). Empty slots are bypassed automatically.")
+                    bullet("**MIDI.** Incoming MIDI is routed to every loaded plug-in, so instruments respond to notes and MIDI-controllable effects receive control data.")
+                    bullet("**Fader.** The end of the chain runs through the level fader (gain, mute and the output meters) before reaching the output device.")
+                    para("Everything is stereo (2 in / 2 out).")
+
+                    // 2 ---------------------------------------------------------
+                    section("2.  Supported Plug-in Formats")
+                    para("VALHost loads the following macOS plug-in formats:")
+                    bullet("**Audio Unit (AU)** — Apple's native format. File extension `.component`.")
+                    bullet("**VST3** — Steinberg's current standard. File extension `.vst3`.")
+                    bullet("**LV2** — the open plug-in standard. Bundle extension `.lv2`.")
+                    sub("What about VST2 / VST?")
+                    para("**VST2 (the classic “VST” / `.vst` format) is not supported.** Plug-in hosting for VST2 is disabled in this build. VST2 is a deprecated, legacy SDK that Steinberg no longer licenses, so VALHost intentionally hosts only the modern formats above. If a manufacturer ships both VST2 and VST3, install and use the **VST3** version. There is no VST1 support either; “VST” in this guide always means VST3.")
+
+                    // 3 ---------------------------------------------------------
+                    section("3.  Where Plug-ins Are Searched")
+                    para("When you rescan, VALHost looks in the standard macOS plug-in locations for each format. Both your user folder and the system-wide folder are scanned:")
+
+                    sub("Audio Unit (.component)")
+                    mono("~/Library/Audio/Plug-Ins/Components\n/Library/Audio/Plug-Ins/Components")
+                    para("Audio Units are also discovered through the macOS AudioComponent registry, so any correctly installed AU is found regardless of which of the two folders it lives in.")
+
+                    sub("VST3 (.vst3)")
+                    mono("~/Library/Audio/Plug-Ins/VST3\n/Library/Audio/Plug-Ins/VST3")
+
+                    sub("LV2 (.lv2)")
+                    mono("~/Library/Audio/Plug-Ins/LV2\n/Library/Audio/Plug-Ins/LV2")
+                    para("In addition, any folders listed in the `LV2_PATH` environment variable are searched.")
+
+                    para("`~` means your home folder (for example `/Users/yourname`). The leading `/Library` path is the shared, system-wide library that applies to all users. Install a plug-in into the matching folder for its format, then rescan.")
+
+                    // 4 ---------------------------------------------------------
+                    section("4.  Plug-in Compatibility")
+                    bullet("**Architecture.** VALHost is a native **Apple Silicon (arm64)** application. It can only load plug-ins that provide an **arm64** build — i.e. native Apple Silicon or **Universal 2** plug-ins. Intel-only (x86_64) plug-ins will not load, because a single process cannot mix architectures. On an Intel Mac, plug-ins must provide an x86_64 build.")
+                    bullet("**Bit depth.** Only 64-bit plug-ins are supported. Old 32-bit plug-ins cannot be loaded by any modern macOS host.")
+                    bullet("**Format version.** Use **VST3**, **AU v2/v3**, or **LV2**. Manufacturer “VST2” downloads will be ignored — pick their VST3 or AU installer instead.")
+                    bullet("**Validation.** Plug-ins that fail Apple's `auval` validation, or that are damaged/unsigned and blocked by macOS, may not appear after a scan. Make sure the plug-in is properly installed and, if needed, allowed in **System Settings ▸ Privacy & Security**.")
+
+                    // 5 ---------------------------------------------------------
+                    section("5.  Scanning & the Plug-in Cache")
+                    para("VALHost remembers the plug-ins it has found so it does not have to rescan on every launch. The results are stored here:")
+                    mono("~/Library/Application Support/VALHost/scanned_plugins.xml")
+                    para("A scan also uses a “dead man's pedal” file to safely skip a plug-in that crashes mid-scan:")
+                    mono("~/Library/Application Support/VALHost/scanner_pedal.xml")
+                    para("After installing or updating plug-ins, run a rescan so the new versions appear. If the plug-in list ever looks wrong, you can quit VALHost, delete the two files above, and relaunch to force a clean rescan.")
+
+                    // 6 ---------------------------------------------------------
+                    section("6.  Audio Setup (Audio Settings)")
+                    para("Click **Audio Settings** in the top bar to open the standard macOS audio configuration panel. There you choose:")
+                    bullet("**Output device** — where VALHost sends the processed sound (your speakers, headphones or audio interface).")
+                    bullet("**Input device** — where VALHost receives sound from (a microphone, an audio interface, or a virtual cable — see the next section).")
+                    bullet("**Sample rate** and **buffer size (latency)** — smaller buffers mean lower latency but higher CPU load. 128–256 samples is a good starting point.")
+                    para("**Microphone permission:** the first time VALHost uses an audio input, macOS asks for **Microphone** access — this is required for *any* input, including a virtual cable. Click **Allow**. You can change this later under **System Settings ▸ Privacy & Security ▸ Microphone**.")
+
+                    // 7 ---------------------------------------------------------
+                    section("7.  Processing Other Apps' Audio — Virtual Audio Cable (BlackHole)")
+                    para("VALHost processes whatever arrives at its **audio input**. macOS does not normally let one app capture another app's playback, so to run audio from Spotify, a browser, a DAW, or the whole system through VALHost's effects, you need a **virtual audio cable**. The free, widely used choice is **BlackHole**.")
+
+                    sub("Step 1 — Install BlackHole")
+                    bullet("Download and install **BlackHole 2ch** (the 2-channel version is ideal for a stereo strip) from the official BlackHole project (existential.audio / GitHub).")
+                    bullet("After installation it appears as a new audio device named **“BlackHole 2ch.”** No audio is audible through it directly — it is a virtual pipe between apps.")
+
+                    sub("Step 2 — Send the source audio INTO BlackHole")
+                    para("Decide what you want to process:")
+                    bullet("**Whole system audio:** open **System Settings ▸ Sound ▸ Output** and select **BlackHole 2ch**. Everything your Mac plays now flows into BlackHole (and is silent on your speakers until VALHost passes it on — that is expected).")
+                    bullet("**A single app (e.g. a DAW):** set that app's own audio **output** to **BlackHole 2ch** in its preferences, and leave the macOS system output on your speakers.")
+
+                    sub("Step 3 — Set VALHost's input and output")
+                    para("Open **Audio Settings** in VALHost and set:")
+                    bullet("**Input = BlackHole 2ch** — this is the audio coming from the source app/system.")
+                    bullet("**Output = your real device** — e.g. *MacBook Pro Speakers*, your headphones, or your audio interface. This is what you will actually hear.")
+                    mono("Source app / System  →  BlackHole 2ch  →  VALHost (Input)\nVALHost effects + fader  →  VALHost (Output)  →  Speakers / Headphones")
+                    para("That's it — audio from the source now passes through VALHost's plug-in chain and out to your speakers.")
+
+                    sub("Step 4 (optional) — Hear system audio AND keep monitoring")
+                    para("If you routed the **whole system** into BlackHole, your normal alerts and other apps also go silent except through VALHost. If you want a copy to reach your speakers directly as well, create a **Multi-Output Device**:")
+                    bullet("Open **Audio MIDI Setup** (in /Applications/Utilities).")
+                    bullet("Click **+** ▸ **Create Multi-Output Device**, then tick both **BlackHole 2ch** and your **speakers/headphones**.")
+                    bullet("Set that Multi-Output Device as the macOS **system output**. BlackHole still feeds VALHost, while your speakers get the dry copy.")
+                    para("For most effect-processing use, Step 3 alone is enough; the Multi-Output Device is only needed for special monitoring setups.")
+
+                    sub("Avoiding feedback loops")
+                    bullet("**Never set VALHost's output to BlackHole** while BlackHole is also its input — that creates an infinite loop and a loud howl.")
+                    bullet("Keep the source going **into** BlackHole and VALHost coming **out** to a real device. Input and output must be different devices.")
+
+                    // 8 ---------------------------------------------------------
+                    section("8.  Using VALHost as an Instrument Host")
+                    bullet("Load a software instrument (AU/VST3/LV2 synth or sampler) into the **INST** slot.")
+                    bullet("Connect a MIDI keyboard, or select a MIDI input in **Audio Settings**. You can also use the on-screen keyboard at the bottom of the window.")
+                    bullet("Add effects in **FX 1–4** to process the instrument (reverb, EQ, compression, etc.).")
+                    bullet("When an instrument is loaded, the audio input is ignored — the instrument is the source.")
+
+                    // 9 ---------------------------------------------------------
+                    section("9.  The Channel Strip")
+                    bullet("**Slots.** Click a slot to choose a plug-in for it. The instrument list shows only instruments; effect slots show only effects.")
+                    bullet("**Editor.** Open a plug-in's own interface from its slot. If a plug-in has no usable native UI, VALHost shows a generic parameter editor instead.")
+                    bullet("**Fader.** The level fader is calibrated in decibels with a natural feel: the **+2 dB … −6 dB** region occupies the top half of the travel for fine control near unity gain, **−6 … −30 dB** the next portion, and **−30 dB … −∞** the bottom. The very bottom is true silence (**−∞ dB**).")
+                    bullet("**Mute.** Silences the output instantly.")
+                    bullet("**Meters.** The stereo meters show output level in dBFS. The scale turns yellow approaching −6 dBFS and red at 0 dBFS (clipping).")
+
+                    // 10 --------------------------------------------------------
+                    section("10.  Saving & Loading Sessions")
+                    para("Use **Save** and **Load** in the top bar to store and recall a complete setup — which plug-ins are loaded in each slot, their settings, and the fader/mute state — as a `.valhost` file.")
+
+                    // 11 --------------------------------------------------------
+                    section("11.  Troubleshooting")
+                    bullet("**No sound:** check that the correct **Output** device is selected, the **fader is up**, and **Mute** is off. If processing input, confirm the **Input** device and that audio is actually reaching BlackHole.")
+                    bullet("**A plug-in doesn't appear:** confirm it's installed in the correct folder for its format (Section 3), is **arm64/Universal**, then rescan. Delete the cache files (Section 5) to force a clean scan.")
+                    bullet("**Input is silent:** make sure macOS granted **Microphone** permission, and that the source app/system output is set to **BlackHole 2ch**.")
+                    bullet("**Loud howling / feedback:** your input and output are the same device — set VALHost's output to a real speaker/headphone device, not back into BlackHole.")
+                    bullet("**Crackles / dropouts:** increase the **buffer size** in Audio Settings.")
+
+                    // Footer ----------------------------------------------------
+                    Divider().background(Color.gray.opacity(0.2)).padding(.vertical, 10)
+                    Text("VALHost v\(appVersion) (Build \(appBuild))   •   © Peter Betz   •   Powered by JUCE")
+                        .font(.system(size: 9))
+                        .foregroundColor(.gray.opacity(0.6))
+                        .padding(.bottom, 8)
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 18)
+                .textSelection(.enabled)
+            }
+            .background(
+                LinearGradient(gradient: Gradient(colors: [Color(white: 0.09), Color(white: 0.13)]),
+                               startPoint: .top, endPoint: .bottom)
+            )
+        }
+        .frame(width: 680, height: 760)
+    }
+
+    // MARK: Styled building blocks
+    private func section(_ s: String) -> some View {
+        Text(s)
+            .font(.system(size: 15, weight: .bold))
+            .foregroundColor(.teal)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 18)
+            .padding(.bottom, 4)
+    }
+
+    private func sub(_ s: String) -> some View {
+        Text(s)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(Color(white: 0.92))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+    }
+
+    private func para(_ s: String) -> some View {
+        Text(.init(s))
+            .font(.system(size: 11.5))
+            .foregroundColor(Color(white: 0.80))
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 2)
+    }
+
+    private func bullet(_ s: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("•")
+                .font(.system(size: 11.5, weight: .bold))
+                .foregroundColor(.teal)
+            Text(.init(s))
+                .font(.system(size: 11.5))
+                .foregroundColor(Color(white: 0.80))
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func mono(_ s: String) -> some View {
+        Text(s)
+            .font(.system(size: 10.5, design: .monospaced))
+            .foregroundColor(.teal)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.35)))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.teal.opacity(0.15), lineWidth: 1))
+            .padding(.vertical, 4)
     }
 }

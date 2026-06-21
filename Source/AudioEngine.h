@@ -73,7 +73,6 @@ public:
 
     float gain = 1.0f;
     bool mute = false;
-    bool solo = false;
     std::atomic<float> leftLevel { 0.0f };
     std::atomic<float> rightLevel { 0.0f };
 
@@ -164,8 +163,6 @@ public:
     void setFaderGain (float gain) { if (faderProcessor) faderProcessor->gain = gain; }
     bool getFaderMute() const { return faderProcessor != nullptr ? faderProcessor->mute : false; }
     void setFaderMute (bool mute) { if (faderProcessor) faderProcessor->mute = mute; }
-    bool getFaderSolo() const { return faderProcessor != nullptr ? faderProcessor->solo : false; }
-    void setFaderSolo (bool solo) { if (faderProcessor) faderProcessor->solo = solo; }
     float getLeftLevel() const { return faderProcessor != nullptr ? faderProcessor->leftLevel.load() : 0.0f; }
     float getRightLevel() const { return faderProcessor != nullptr ? faderProcessor->rightLevel.load() : 0.0f; }
 

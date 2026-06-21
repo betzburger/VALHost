@@ -542,7 +542,6 @@ bool AudioEngine::saveSession (const juce::File& file)
     juce::DynamicObject::Ptr state = new juce::DynamicObject();
     state->setProperty ("volume", getFaderGain());
     state->setProperty ("mute", getFaderMute());
-    state->setProperty ("solo", getFaderSolo());
 
     juce::Array<juce::var> slotsArray;
     for (int i = 0; i < totalSlots; ++i)
@@ -603,7 +602,6 @@ bool AudioEngine::loadSession (const juce::File& file, juce::String& errorMessag
 
     setFaderGain ((float) state->getProperty ("volume"));
     setFaderMute ((bool) state->getProperty ("mute"));
-    setFaderSolo ((bool) state->getProperty ("solo"));
 
     auto* slots = state->getProperty ("slots").getArray();
     if (slots != nullptr)

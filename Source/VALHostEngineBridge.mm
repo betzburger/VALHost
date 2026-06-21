@@ -180,16 +180,6 @@
     if (_audioEngine) _audioEngine->setFaderMute(mute);
 }
 
-- (BOOL)getSolo
-{
-    return _audioEngine ? _audioEngine->getFaderSolo() : NO;
-}
-
-- (void)setSolo:(BOOL)solo
-{
-    if (_audioEngine) _audioEngine->setFaderSolo(solo);
-}
-
 // Metering & Info
 - (float)getLeftLevel
 {

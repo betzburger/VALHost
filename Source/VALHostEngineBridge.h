@@ -29,8 +29,6 @@
 - (void)setVolume:(float)volume;
 - (BOOL)getMute;
 - (void)setMute:(BOOL)mute;
-- (BOOL)getSolo;
-- (void)setSolo:(BOOL)solo;
 
 // Metering & Info
 - (float)getLeftLevel;
