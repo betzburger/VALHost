@@ -277,7 +277,8 @@ struct SlotRow: View {
             }
             .buttonStyle(.plain)
             
-            // Edit button (plugin's native editor)
+            // Edit button — opens the plugin's editor (the engine automatically uses
+            // a safe generic editor for plugins whose native view would crash)
             Button(action: {
                 VALHostEngine.sharedInstance().showPluginEditor(atSlot: Int32(slotIndex))
             }) {
@@ -287,19 +288,7 @@ struct SlotRow: View {
             }
             .buttonStyle(.bordered)
             .disabled(!isLoaded)
-            .help("Open the plugin's own editor window")
-
-            // Generic editor (JUCE sliders) — use if a plugin's own window misbehaves
-            Button(action: {
-                VALHostEngine.sharedInstance().showGenericPluginEditor(atSlot: Int32(slotIndex))
-            }) {
-                Text("G")
-                    .font(.system(size: 11, weight: .bold))
-                    .frame(width: 26, height: 32)
-            }
-            .buttonStyle(.bordered)
-            .disabled(!isLoaded)
-            .help("Open a generic slider editor (use if the plugin's own window crashes, e.g. Apple's Graphic EQ)")
+            .help("Open the plugin editor")
 
             // Unload button
             Button(action: {
@@ -567,6 +556,15 @@ struct MixerStripView: View {
 struct SidebarView: View {
     @ObservedObject var state: VALHostState
 
+    private var sidebarHint: String {
+        guard let slot = state.selectedSlot else {
+            return "Select a slot, then double-click a plugin to load it"
+        }
+        return slot == 0
+            ? "Double-click to load an instrument into the INST slot"
+            : "Double-click to load an effect into the selected FX slot"
+    }
+
     var body: some View {
         VStack(spacing: 8) {
             Text("SCANNED PLUGINS")
@@ -577,13 +575,19 @@ struct SidebarView: View {
                 .textFieldStyle(.roundedBorder)
                 .padding(.horizontal, 4)
 
-            Text("Double-click to load a plugin into the selected effects slot")
+            Text(sidebarHint)
                 .font(.system(size: 10))
                 .foregroundColor(.gray.opacity(0.7))
                 .padding(.bottom, 2)
 
             List {
-                let filtered = state.plugins.filter {
+                // Show only plugins that fit the selected slot: the Instrument slot
+                // (0) lists instruments, the FX slots list effects.
+                let base: [ScannedPlugin] = {
+                    guard let slot = state.selectedSlot else { return state.plugins }
+                    return slot == 0 ? state.instruments : state.effects
+                }()
+                let filtered = base.filter {
                     state.searchText.isEmpty ? true : (
                         $0.name.localizedCaseInsensitiveContains(state.searchText) ||
                         $0.format.localizedCaseInsensitiveContains(state.searchText)
