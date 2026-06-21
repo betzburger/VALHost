@@ -31,16 +31,20 @@ void AudioEngine::init()
             knownPlugins.recreateFromXml (*xml);
     }
 
-    // Open the default audio device. Prefer stereo input + output, but fall back to
-    // output-only if the input cannot be opened (no input device, denied microphone
-    // permission, or a clock-domain conflict between separate input/output devices —
-    // the usual cause of the CoreAudio "_StartIO failed (35)" / "there already is a
-    // thread" messages seen at launch). Output-only still gives full playback.
-    juce::String audioInitError = deviceManager.initialiseWithDefaultDevices (2, 2);
+    // Restore the previous audio/MIDI setup when available. Prefer stereo input +
+    // output, but fall back to output-only if the input cannot be opened (no input
+    // device, denied microphone permission, or a clock-domain conflict between
+    // separate input/output devices). Output-only still gives full playback.
+    auto audioSettingsFile = getAudioSettingsFile();
+    std::unique_ptr<juce::XmlElement> savedAudioSettings;
+    if (audioSettingsFile.existsAsFile())
+        savedAudioSettings = juce::XmlDocument::parse (audioSettingsFile);
+
+    juce::String audioInitError = deviceManager.initialise (2, 2, savedAudioSettings.get(), true);
     if (audioInitError.isNotEmpty() || deviceManager.getCurrentAudioDevice() == nullptr)
     {
         DBG ("Audio device init with input failed (\"" << audioInitError << "\"); retrying output-only.");
-        audioInitError = deviceManager.initialiseWithDefaultDevices (0, 2);
+        audioInitError = deviceManager.initialise (0, 2, savedAudioSettings.get(), true);
     }
     if (audioInitError.isNotEmpty())
         DBG ("Audio device init failed: " << audioInitError);
@@ -89,6 +93,8 @@ void AudioEngine::init()
 
 void AudioEngine::shutdown()
 {
+    saveAudioSettings();
+
     keyboardState.removeListener (this);
 
     // Stop audio callback first
@@ -642,6 +648,8 @@ bool AudioEngine::loadSession (const juce::File& file, juce::String& errorMessag
 
 void AudioEngine::changeListenerCallback (juce::ChangeBroadcaster* /*source*/)
 {
+    saveAudioSettings();
+
     // Handle sample rate or buffer size changes
     double sampleRate = 44100.0;
     int blockSize = 512;
@@ -673,6 +681,23 @@ juce::File AudioEngine::getSavedPluginListFile()
 {
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
         .getChildFile ("Application Support/VALHost/scanned_plugins.xml");
+}
+
+juce::File AudioEngine::getAudioSettingsFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+        .getChildFile ("Application Support/VALHost/audio_settings.xml");
+}
+
+void AudioEngine::saveAudioSettings()
+{
+    auto state = deviceManager.createStateXml();
+    if (state == nullptr)
+        return;
+
+    auto file = getAudioSettingsFile();
+    file.getParentDirectory().createDirectory();
+    state->writeTo (file);
 }
 
 //==============================================================================

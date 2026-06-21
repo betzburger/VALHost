@@ -219,9 +219,11 @@ private:
     // protection when they are torn down.
     bool editorIsNative[totalSlots] = {};
 
-    // Helper to get cached scanned list file
+    // Helper to get cached support files
     juce::File getDeadMansPedalFile();
     juce::File getSavedPluginListFile();
+    juce::File getAudioSettingsFile();
+    void saveAudioSettings();
 
     //==============================================================================
     // Crash-safe plugin editors.

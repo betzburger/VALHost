@@ -124,7 +124,7 @@ class VALHostState: ObservableObject {
 enum MeterScale {
     static let minDb: Float = -60   // bottom of the meter
     static let maxDb: Float = 6     // top — headroom above 0 dBFS so "over" is visible
-    static let yellowDb: Float = -12 // green -> yellow (approaching clipping)
+    static let yellowDb: Float = -6  // green -> yellow (approaching clipping)
     static let redDb: Float = 0     // yellow -> red (0 dBFS = clipping / over)
     static let marks: [Float] = [0, -6, -12, -24, -48]
 
@@ -187,29 +187,22 @@ struct VerticalLevelMeter: View {
 }
 
 //==============================================================================
-// Stereo output meter: two zoned bars, a calibrated dB scale, and a numeric
-// peak readout.
+// Stereo output meter: two zoned bars and a calibrated dB scale.
 struct OutputMeterView: View {
     var leftPeak: Float
     var rightPeak: Float
 
     private let meterHeight: CGFloat = 140
+    private let meterBarWidth: CGFloat = 22
 
     var body: some View {
-        let peakDb = max(MeterScale.db(forLinear: leftPeak),
-                         MeterScale.db(forLinear: rightPeak))
-
-        VStack(spacing: 4) {
-            Text("METER")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundColor(.gray)
-
+        VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .center, spacing: 4) {
                 HStack(spacing: 3) {
                     VerticalLevelMeter(val: leftPeak)
                     VerticalLevelMeter(val: rightPeak)
                 }
-                .frame(width: 22, height: meterHeight)
+                .frame(width: meterBarWidth, height: meterHeight)
 
                 // Calibrated dBFS scale
                 ZStack {
@@ -229,12 +222,7 @@ struct OutputMeterView: View {
             }
             .font(.system(size: 7, weight: .bold))
             .foregroundColor(.gray.opacity(0.7))
-            .frame(width: 22)
-
-            // Numeric peak readout, coloured by zone
-            Text(peakDb <= MeterScale.minDb ? "–∞ dB" : String(format: "%+.1f dB", peakDb))
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .foregroundColor(MeterScale.color(forDb: peakDb))
+            .frame(width: meterBarWidth)
         }
     }
 }
@@ -404,13 +392,67 @@ struct CustomVerticalFader: View {
     @Binding var value: Double // Range 0.0 to 1.25
     let onChanged: (Double) -> Void
     
+    // Piecewise-linear dB scale defined by (position, dB) anchors, ascending.
+    // Position 0 == true silence (-inf dB); each segment is linear in dB.
+    //   +2 .. -6 dB  -> top half of the travel
+    //   -6 .. -30 dB -> next 0.3
+    //   -30 .. floor -> bottom 0.2
+    private static let anchors: [(p: CGFloat, db: Double)] = [
+        (0.0, -96),
+        (0.2, -30),
+        (0.5, -6),
+        (1.0,  2),
+    ]
+    private static var minDb: Double { anchors.first!.db }
+    private static var maxDb: Double { anchors.last!.db }
+    private static var maxGain: Double { pow(10.0, maxDb / 20.0) }
+
+    // dB -> normalized fader position (0...1).
+    private static func positionForDb(_ db: Double) -> CGFloat {
+        if db <= minDb { return 0 }
+        if db >= maxDb { return 1 }
+        for i in 0..<(anchors.count - 1) {
+            let lo = anchors[i], hi = anchors[i + 1]
+            if db <= hi.db {
+                let t = (db - lo.db) / (hi.db - lo.db)
+                return lo.p + CGFloat(t) * (hi.p - lo.p)
+            }
+        }
+        return 1
+    }
+
+    // normalized fader position (0...1) -> dB.
+    private static func dbForPosition(_ p: CGFloat) -> Double {
+        if p <= 0 { return minDb }
+        if p >= 1 { return maxDb }
+        for i in 0..<(anchors.count - 1) {
+            let lo = anchors[i], hi = anchors[i + 1]
+            if p <= hi.p {
+                let t = Double((p - lo.p) / (hi.p - lo.p))
+                return lo.db + t * (hi.db - lo.db)
+            }
+        }
+        return maxDb
+    }
+
+    // Gain (linear) -> normalized fader position (0...1).
+    private static func positionForGain(_ gain: Double) -> CGFloat {
+        if gain <= 0 { return 0 }
+        return positionForDb(20.0 * log10(gain))
+    }
+
+    // Normalized fader position (0...1) -> gain (linear).
+    private static func gainForPosition(_ p: CGFloat) -> Double {
+        if p <= 0 { return 0 }
+        return pow(10.0, dbForPosition(p) / 20.0)
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let height = geometry.size.height
-            let faderRange: ClosedRange<Double> = 0.0...1.25
-            
-            // Calculate handle Y offset
-            let normVal = CGFloat((value - faderRange.lowerBound) / (faderRange.upperBound - faderRange.lowerBound))
+
+            // Calculate handle Y offset (logarithmic / dB-based position)
+            let normVal = Self.positionForGain(value)
             let handleHeight: CGFloat = 18
             let trackHeight = max(0, height - handleHeight)
             let yOffset = trackHeight * (1.0 - normVal)
@@ -469,7 +511,7 @@ struct CustomVerticalFader: View {
                                 let dragY = gesture.location.y - (handleHeight / 2)
                                 let clampedY = max(0, min(dragY, trackHeight))
                                 let percent = trackHeight > 0 ? (1.0 - (clampedY / trackHeight)) : 0.0
-                                let val = faderRange.lowerBound + Double(percent) * (faderRange.upperBound - faderRange.lowerBound)
+                                let val = Self.gainForPosition(percent)
                                 self.value = val
                                 onChanged(val)
                             }
@@ -603,7 +645,9 @@ struct MixerStripView: View {
                 
                 // Custom Vertical Fader (Teal Highlight, 3D Handle, Vertical Drag)
                 VStack(spacing: 4) {
-                    Text(String(format: "%.1f dB", faderValueToDb(state.volume)))
+                    Text(faderValueToDb(state.volume) <= -96.0
+                         ? "-∞ dB"
+                         : String(format: "%.1f dB", faderValueToDb(state.volume)))
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundColor(.gray)
                     
@@ -627,11 +671,11 @@ struct MixerStripView: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.15), lineWidth: 1.5))
     }
     
-    // Helper to translate slider/fader range (0.0 to 1.25) to a decibel representation
+    // Helper to translate the linear fader gain to a decibel representation.
+    // A gain of 0 (the very bottom of the fader) is true silence -> -inf dB.
     private func faderValueToDb(_ val: Double) -> Double {
-        if val <= 0.0001 { return -96.0 }
-        let db = 20.0 * log10(val)
-        return db
+        if val <= 0.0 { return -.infinity }
+        return 20.0 * log10(val)
     }
 }
 
