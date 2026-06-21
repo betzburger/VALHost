@@ -31,9 +31,19 @@ void AudioEngine::init()
             knownPlugins.recreateFromXml (*xml);
     }
 
-    // Initialize audio device manager
+    // Open the default audio device. Prefer stereo input + output, but fall back to
+    // output-only if the input cannot be opened (no input device, denied microphone
+    // permission, or a clock-domain conflict between separate input/output devices —
+    // the usual cause of the CoreAudio "_StartIO failed (35)" / "there already is a
+    // thread" messages seen at launch). Output-only still gives full playback.
     juce::String audioInitError = deviceManager.initialiseWithDefaultDevices (2, 2);
-    deviceManager.addChangeListener (this);
+    if (audioInitError.isNotEmpty() || deviceManager.getCurrentAudioDevice() == nullptr)
+    {
+        DBG ("Audio device init with input failed (\"" << audioInitError << "\"); retrying output-only.");
+        audioInitError = deviceManager.initialiseWithDefaultDevices (0, 2);
+    }
+    if (audioInitError.isNotEmpty())
+        DBG ("Audio device init failed: " << audioInitError);
 
     // Setup Audio Graph
     audioGraph = std::make_unique<juce::AudioProcessorGraph>();
@@ -69,6 +79,10 @@ void AudioEngine::init()
     // Set audio callback
     deviceManager.addAudioCallback (graphPlayer.get());
     deviceManager.addMidiInputDeviceCallback ({}, graphPlayer.get());
+
+    // Listen for device changes only now that the graph and player are fully set up,
+    // so a change callback can never run against half-initialised state.
+    deviceManager.addChangeListener (this);
 
     updateGraphConnections();
 }
@@ -280,6 +294,10 @@ namespace
         "AudioUnit:Effects/aufx,pmeq,appl",   // Apple AUParametricEQ
         "AudioUnit:Effects/aufx,raac,appl",   // Apple AURoundTripAAC (crashes on close)
         "AudioUnit:Effects/aufx,lmtr,appl",   // Apple AUPeakLimiter
+        // Apple instrument (Synth) editors crash the same way.
+        "AudioUnit:Synths/aumu,samp,appl",    // Apple AUSampler
+        "AudioUnit:Synths/aumu,msyn,appl",    // Apple AUMIDISynth
+        "AudioUnit:Synths/aumu,dls ,appl",    // Apple DLSMusicDevice (note trailing space in 'dls ')
     };
 
     juce::String getEditorIdentifier (juce::AudioProcessor* processor)
