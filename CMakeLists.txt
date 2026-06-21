@@ -40,7 +40,12 @@ target_compile_definitions(VALHost PRIVATE
     JUCE_PLUGINHOST_VST=0 # VST2 is deprecated and disabled
     JUCE_SILENCE_XCODE_DEPRECATION_WARNINGS=1
     JUCE_DISABLE_ASSERTIONS=1
-    JUCE_LOG_ASSERTIONS=1
+    # Keep assertion logging OFF. JUCE's LV2 lookup constructs a juce::File from a
+    # plugin URI (juce_LV2PluginFormat.cpp), which trips a harmless "Illegal absolute
+    # path" assertion for every LV2 plug-in during a scan. With JUCE_LOG_ASSERTIONS=1
+    # that floods the console with hundreds of lines. =0 silences that spam; the
+    # behaviour is benign (the lookup falls back to URI matching).
+    JUCE_LOG_ASSERTIONS=0
 )
 
 # Link modules
