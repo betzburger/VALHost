@@ -199,8 +199,14 @@ bool AudioEngine::loadPlugin (int slotIndex, const juce::PluginDescription& desc
     if (instance == nullptr)
         return false;
 
-    // Set latency playback compensation
-    instance->setPlayConfigDetails (instance->getBusCount(true), instance->getBusCount(false), sampleRate, blockSize);
+    // Configure sample rate / block size only, leaving the plugin's own channel
+    // layout intact. NOTE: do NOT call setPlayConfigDetails() with getBusCount()
+    // here — its first two arguments are *channel* counts, not *bus* counts.
+    // Passing bus counts forces a wrong (mono) layout on stereo plugins, which
+    // fails internally and leaves the plugin in an inconsistent state (e.g. it
+    // crashes Apple's AUGraphicEQ editor). The AudioProcessorGraph applies the
+    // proper play config when it prepares the node.
+    instance->setRateAndBufferSizeDetails (sampleRate, blockSize);
 
     // Add to graph
     activeNodes[slotIndex] = audioGraph->addNode (std::move (instance));
