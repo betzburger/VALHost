@@ -39,6 +39,16 @@ class VALHostState: ObservableObject {
     // MIDI Touch state
     @Published var activeTouches = Set<Int>()
 
+    // Transient status messages (Save/Load/errors) are held visible for a few
+    // seconds so the 30 FPS level-poll does not immediately overwrite them with
+    // the idle "ready" message.
+    private var statusHoldUntil: Date = .distantPast
+
+    func flashStatus(_ message: String, seconds: TimeInterval = 4) {
+        statusMessage = message
+        statusHoldUntil = Date().addingTimeInterval(seconds)
+    }
+
     func refreshPlugins() {
         let names = VALHostEngine.sharedInstance().getScannedPluginNames() ?? []
         let formats = VALHostEngine.sharedInstance().getScannedPluginFormats() ?? []
@@ -79,7 +89,7 @@ class VALHostState: ObservableObject {
             var err: NSString?
             let success = VALHostEngine.sharedInstance().loadPlugin(atSlot: Int32(slot), pluginIndex: Int32(idx), error: &err)
             if !success {
-                self.statusMessage = "Error loading plugin: \(err ?? "Unknown error")"
+                self.flashStatus("Error loading plugin: \(err ?? "Unknown error")")
             }
             refreshSlots()
         }
@@ -100,7 +110,7 @@ class VALHostState: ObservableObject {
                 self?.isScanning = false
                 self?.refreshPlugins()
                 if let total = self?.plugins.count {
-                    self?.statusMessage = "Scan complete. \(total) plug-ins found."
+                    self?.flashStatus("Scan complete. \(total) plug-ins found.")
                 }
             }
         })
@@ -111,7 +121,7 @@ class VALHostState: ObservableObject {
         self.leftPeak = VALHostEngine.sharedInstance().getLeftLevel()
         self.rightPeak = VALHostEngine.sharedInstance().getRightLevel()
         
-        if !self.isScanning {
+        if !self.isScanning && Date() >= self.statusHoldUntil {
             self.statusMessage = "\(self.plugins.count) plug-ins scanned and ready."
         }
     }
@@ -910,9 +920,9 @@ struct ContentView: View {
                     path += ".valhost"
                 }
                 if VALHostEngine.sharedInstance().saveSession(toFile: path) {
-                    state.statusMessage = "Saved session to \(url.lastPathComponent)"
+                    state.flashStatus("Saved session to \(url.lastPathComponent)")
                 } else {
-                    state.statusMessage = "Failed to save session"
+                    state.flashStatus("Failed to save session")
                 }
             }
         }
@@ -928,10 +938,10 @@ struct ContentView: View {
             if result == .OK, let url = chooser.url {
                 var err: NSString?
                 if VALHostEngine.sharedInstance().loadSession(fromFile: url.path, error: &err) {
-                    state.statusMessage = "Loaded session from \(url.lastPathComponent)"
+                    state.flashStatus("Loaded session from \(url.lastPathComponent)")
                     state.refreshSlots()
                 } else {
-                    state.statusMessage = "Error loading session: \(err ?? "Unknown error")"
+                    state.flashStatus("Error loading session: \(err ?? "Unknown error")")
                 }
             }
         }

@@ -22,7 +22,7 @@ public:
 
     void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/) override
     {
-        if (mute)
+        if (mute.load())
         {
             buffer.clear();
             leftLevel.store (0.0f);
@@ -30,8 +30,9 @@ public:
             return;
         }
 
-        if (gain != 1.0f)
-            buffer.applyGain (gain);
+        const float g = gain.load();
+        if (g != 1.0f)
+            buffer.applyGain (g);
 
         auto numSamples = buffer.getNumSamples();
         if (numSamples > 0)
@@ -71,8 +72,8 @@ public:
     bool hasEditor() const override { return false; }
     juce::AudioProcessorEditor* createEditor() override { return nullptr; }
 
-    float gain = 1.0f;
-    bool mute = false;
+    std::atomic<float> gain { 1.0f };
+    std::atomic<bool> mute { false };
     std::atomic<float> leftLevel { 0.0f };
     std::atomic<float> rightLevel { 0.0f };
 
@@ -159,10 +160,10 @@ public:
     void updateGraphConnections();
 
     // Volume & Metering
-    float getFaderGain() const { return faderProcessor != nullptr ? faderProcessor->gain : 1.0f; }
-    void setFaderGain (float gain) { if (faderProcessor) faderProcessor->gain = gain; }
-    bool getFaderMute() const { return faderProcessor != nullptr ? faderProcessor->mute : false; }
-    void setFaderMute (bool mute) { if (faderProcessor) faderProcessor->mute = mute; }
+    float getFaderGain() const { return faderProcessor != nullptr ? faderProcessor->gain.load() : 1.0f; }
+    void setFaderGain (float gain) { if (faderProcessor) faderProcessor->gain.store (gain); }
+    bool getFaderMute() const { return faderProcessor != nullptr ? faderProcessor->mute.load() : false; }
+    void setFaderMute (bool mute) { if (faderProcessor) faderProcessor->mute.store (mute); }
     float getLeftLevel() const { return faderProcessor != nullptr ? faderProcessor->leftLevel.load() : 0.0f; }
     float getRightLevel() const { return faderProcessor != nullptr ? faderProcessor->rightLevel.load() : 0.0f; }
 
