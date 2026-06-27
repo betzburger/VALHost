@@ -31,6 +31,11 @@
     }
 }
 
+- (void)reopenAudioInput
+{
+    if (_audioEngine) _audioEngine->reopenAudioInput();
+}
+
 - (void)shutdownEngine
 {
     if (_audioEngine)
@@ -159,6 +164,17 @@
     }
 }
 
+// Per-slot bypass
+- (void)setBypassAtSlot:(int)slotIndex bypassed:(BOOL)bypassed
+{
+    if (_audioEngine) _audioEngine->setSlotBypassed(slotIndex, bypassed);
+}
+
+- (BOOL)isBypassedAtSlot:(int)slotIndex
+{
+    return _audioEngine ? _audioEngine->isSlotBypassed(slotIndex) : NO;
+}
+
 // Master controls
 - (float)getVolume
 {
@@ -167,7 +183,7 @@
 
 - (void)setVolume:(float)volume
 {
-    if (_audioEngine) _audioEngine->setFaderGain(volume);
+    if (_audioEngine) _audioEngine->setVolumeFromUI(volume);
 }
 
 - (BOOL)getMute
@@ -177,7 +193,7 @@
 
 - (void)setMute:(BOOL)mute
 {
-    if (_audioEngine) _audioEngine->setFaderMute(mute);
+    if (_audioEngine) _audioEngine->setMuteFromUI(mute);
 }
 
 // Metering & Info
@@ -237,6 +253,11 @@
 {
     if (!_audioEngine) return;
     _audioEngine->getMidiKeyboardState().noteOff(1, note, 0.0f);
+}
+
+- (void)sendAllNotesOff
+{
+    if (_audioEngine) _audioEngine->sendPanic();
 }
 
 // Sessions

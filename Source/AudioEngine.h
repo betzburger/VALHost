@@ -136,6 +136,13 @@ public:
     void init();
     void shutdown();
 
+    // Re-open the audio input device with stereo input. Called once microphone
+    // permission has been granted: the prompt is requested explicitly by the app
+    // delegate (AVCaptureDevice), but init() runs before permission exists, so the
+    // first open silently falls back to output-only. This re-opens with input and
+    // refreshes the graph. Must be called on the message thread.
+    void reopenAudioInput();
+
     // Plugin Scanning
     void scanPlugins (std::function<void(const juce::String&)> onProgress,
                       std::function<void()> onComplete);
@@ -156,6 +163,15 @@ public:
     void hidePluginEditor (int slotIndex);
     bool isPluginEditorVisible (int slotIndex) const;
 
+    // Per-slot bypass. Effect slots pass audio through unprocessed; the
+    // instrument slot is silenced. Keeps the plugin and its state loaded.
+    void setSlotBypassed (int slotIndex, bool bypassed);
+    bool isSlotBypassed (int slotIndex) const;
+
+    // MIDI panic: send all-notes-off / all-sound-off / sustain-off to every
+    // plugin on every channel, releasing any stuck or sustained notes.
+    void sendPanic();
+
     // Signal Routing
     void updateGraphConnections();
 
@@ -164,6 +180,14 @@ public:
     void setFaderGain (float gain) { if (faderProcessor) faderProcessor->gain.store (gain); }
     bool getFaderMute() const { return faderProcessor != nullptr ? faderProcessor->mute.load() : false; }
     void setFaderMute (bool mute) { if (faderProcessor) faderProcessor->mute.store (mute); }
+
+    // Volume/mute changes that originate in VALHost (the UI fader, a loaded
+    // session). These apply the change locally *and* mirror it onto VALDriver's
+    // volume control, so the system volume HUD and the macOS volume keys stay in
+    // sync. Changes that arrive the other way (a key press -> VALDriver) are
+    // applied by the property listener and must NOT be echoed back here.
+    void setVolumeFromUI (float gain);
+    void setMuteFromUI (bool mute);
     float getLeftLevel() const { return faderProcessor != nullptr ? faderProcessor->leftLevel.load() : 0.0f; }
     float getRightLevel() const { return faderProcessor != nullptr ? faderProcessor->rightLevel.load() : 0.0f; }
 
@@ -216,6 +240,27 @@ private:
     // JUCE's generic editor (false). Only native views get crash-sentinel
     // protection when they are torn down.
     bool editorIsNative[totalSlots] = {};
+
+    //==============================================================================
+    // System-volume link to VALDriver.
+    //
+    // When VALDriver ("VALHost 2ch") is the macOS default output, the volume keys
+    // act on its volume/mute control. VALDriver owns the single shared value (a
+    // 0..1 scalar that doubles as the fader position); VALHost mirrors it both
+    // ways and applies the actual gain. If the driver is not installed every
+    // method below is a graceful no-op and the fader still works locally.
+   #if JUCE_MAC
+    // System-volume link. All CoreAudio/HAL work lives in SystemVolumeLink (a
+    // JUCE-free translation unit) so this header never pulls in CoreAudio types.
+    void syncVolumeToDriver();                  // push current gain + mute onto VALDriver
+
+    // Volume taper shared with VALDriver and the SwiftUI fader (must match the
+    // anchors in CustomHorizontalFader / VALDriver.c).
+    static float gainForPosition (float pos);   // 0..1 scalar -> linear gain
+    static float positionForGain (float gain);  // linear gain -> 0..1 scalar
+
+    std::unique_ptr<class SystemVolumeLink> systemVolumeLink;
+   #endif
 
     // Helper to get cached support files
     juce::File getDeadMansPedalFile();

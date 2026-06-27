@@ -7,6 +7,10 @@
 - (void)initializeEngine;
 - (void)shutdownEngine;
 
+// Re-open the audio input after microphone access has been granted. Call on the
+// main (JUCE message) thread.
+- (void)reopenAudioInput;
+
 // Scans
 - (void)scanPluginsWithProgress:(void (^)(NSString* progressMsg))progressBlock
                      completion:(void (^)(void))completionBlock
@@ -23,6 +27,10 @@
 - (NSString*)getPluginNameAtSlot:(int)slotIndex;
 - (void)showPluginEditorAtSlot:(int)slotIndex;
 - (void)hidePluginEditorAtSlot:(int)slotIndex;
+
+// Per-slot bypass
+- (void)setBypassAtSlot:(int)slotIndex bypassed:(BOOL)bypassed NS_SWIFT_NAME(setBypass(atSlot:bypassed:));
+- (BOOL)isBypassedAtSlot:(int)slotIndex NS_SWIFT_NAME(isBypassed(atSlot:));
 
 // Master controls
 - (float)getVolume;
@@ -41,6 +49,7 @@
 // MIDI
 - (void)sendMidiNoteOn:(int)note velocity:(int)velocity NS_SWIFT_NAME(sendMidiNoteOn(_:velocity:));
 - (void)sendMidiNoteOff:(int)note NS_SWIFT_NAME(sendMidiNoteOff(_:));
+- (void)sendAllNotesOff NS_SWIFT_NAME(sendAllNotesOff());
 
 // Sessions
 - (BOOL)saveSessionToFile:(NSString*)path;

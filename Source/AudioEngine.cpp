@@ -1,6 +1,57 @@
 #include "AudioEngine.h"
 #include <thread>
 
+#if JUCE_MAC
+ #include "SystemVolumeLink.h"
+
+namespace
+{
+    // The volume taper. MUST stay in sync with CustomHorizontalFader (Swift) and
+    // VALDriver.c: scalar/position 0..1 -> dB anchors.
+    struct VolAnchor { float p, db; };
+    const VolAnchor kVolAnchors[] = { { 0.0f, -96.0f }, { 0.2f, -30.0f }, { 0.5f, -6.0f }, { 1.0f, 2.0f } };
+    constexpr int kNumVolAnchors = 4;
+
+    float scalarToDb (float s)
+    {
+        if (s <= kVolAnchors[0].p) return kVolAnchors[0].db;
+        if (s >= kVolAnchors[kNumVolAnchors - 1].p) return kVolAnchors[kNumVolAnchors - 1].db;
+        for (int i = 0; i < kNumVolAnchors - 1; ++i)
+            if (s <= kVolAnchors[i + 1].p)
+            {
+                float t = (s - kVolAnchors[i].p) / (kVolAnchors[i + 1].p - kVolAnchors[i].p);
+                return kVolAnchors[i].db + t * (kVolAnchors[i + 1].db - kVolAnchors[i].db);
+            }
+        return kVolAnchors[kNumVolAnchors - 1].db;
+    }
+
+    float dbToScalar (float db)
+    {
+        if (db <= kVolAnchors[0].db) return kVolAnchors[0].p;
+        if (db >= kVolAnchors[kNumVolAnchors - 1].db) return kVolAnchors[kNumVolAnchors - 1].p;
+        for (int i = 0; i < kNumVolAnchors - 1; ++i)
+            if (db <= kVolAnchors[i + 1].db)
+            {
+                float t = (db - kVolAnchors[i].db) / (kVolAnchors[i + 1].db - kVolAnchors[i].db);
+                return kVolAnchors[i].p + t * (kVolAnchors[i + 1].p - kVolAnchors[i].p);
+            }
+        return kVolAnchors[kNumVolAnchors - 1].p;
+    }
+}
+
+float AudioEngine::gainForPosition (float pos)
+{
+    if (pos <= 0.0f) return 0.0f;                 // bottom of the travel == true silence
+    return std::pow (10.0f, scalarToDb (pos) / 20.0f);
+}
+
+float AudioEngine::positionForGain (float gain)
+{
+    if (gain <= 0.0f) return 0.0f;
+    return dbToScalar (20.0f * std::log10 (gain));
+}
+#endif // JUCE_MAC
+
 //==============================================================================
 AudioEngine::AudioEngine()
 {
@@ -89,11 +140,63 @@ void AudioEngine::init()
     deviceManager.addChangeListener (this);
 
     updateGraphConnections();
+
+   #if JUCE_MAC
+    // Bind to VALDriver's volume/mute control so the macOS volume keys drive the
+    // fader (and vice-versa). Graceful no-op if the driver is not installed.
+    systemVolumeLink = std::make_unique<SystemVolumeLink>();
+    systemVolumeLink->onExternalVolume = [this] (float scalar) { setFaderGain (gainForPosition (scalar)); };
+    systemVolumeLink->onExternalMute   = [this] (bool mute)    { setFaderMute (mute); };
+    systemVolumeLink->start();
+    syncVolumeToDriver();   // make the driver agree with the current fader value
+   #endif
+}
+
+void AudioEngine::reopenAudioInput()
+{
+    // The very first init() runs in VALHostApp.init(), before the app has had a
+    // chance to request microphone access — so opening the input device either
+    // delivers silence or (more often) errors and drops to the output-only
+    // fallback. Once the user has granted access via the explicit AVCaptureDevice
+    // prompt, re-open the device with stereo input and refresh the graph so the
+    // input signal actually flows. Reuses the saved device selection.
+    if (audioGraph == nullptr)
+        return;
+
+    std::unique_ptr<juce::XmlElement> state (deviceManager.createStateXml());
+
+    juce::String err = deviceManager.initialise (2, 2, state.get(), true);
+    if (err.isNotEmpty() || deviceManager.getCurrentAudioDevice() == nullptr)
+        deviceManager.initialise (0, 2, state.get(), true);
+
+    double sampleRate = 44100.0;
+    int blockSize = 512;
+    int numInputs = 2;
+    int numOutputs = 2;
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+    {
+        sampleRate = device->getCurrentSampleRate();
+        blockSize = device->getCurrentBufferSizeSamples();
+        numInputs = std::max (2, device->getActiveInputChannels().countNumberOfSetBits());
+        numOutputs = std::max (2, device->getActiveOutputChannels().countNumberOfSetBits());
+    }
+
+    audioGraph->setPlayConfigDetails (numInputs, numOutputs, sampleRate, blockSize);
+    audioGraph->prepareToPlay (sampleRate, blockSize);
+    updateGraphConnections();
 }
 
 void AudioEngine::shutdown()
 {
     saveAudioSettings();
+
+   #if JUCE_MAC
+    if (systemVolumeLink)
+    {
+        systemVolumeLink->stop();
+        systemVolumeLink = nullptr;
+    }
+   #endif
 
     keyboardState.removeListener (this);
 
@@ -275,6 +378,46 @@ juce::String AudioEngine::getPluginName (int slotIndex) const
     if (isPluginLoaded (slotIndex))
         return activeNodes[slotIndex]->getProcessor()->getName();
     return "Empty";
+}
+
+void AudioEngine::setSlotBypassed (int slotIndex, bool bypassed)
+{
+    if (slotIndex < 0 || slotIndex >= totalSlots)
+        return;
+    if (activeNodes[slotIndex] != nullptr)
+        activeNodes[slotIndex]->setBypassed (bypassed);
+}
+
+bool AudioEngine::isSlotBypassed (int slotIndex) const
+{
+    if (slotIndex < 0 || slotIndex >= totalSlots)
+        return false;
+    return activeNodes[slotIndex] != nullptr && activeNodes[slotIndex]->isBypassed();
+}
+
+void AudioEngine::sendPanic()
+{
+    // Release everything the on-screen / tracked keyboard thinks is down.
+    keyboardState.allNotesOff (0);
+
+    // And inject the standard "panic" controller messages straight into the
+    // graph's MIDI stream, on every channel, so sustained or hardware-stuck
+    // notes on any loaded plugin are silenced too.
+    if (graphPlayer != nullptr)
+    {
+        auto& collector = graphPlayer->getMidiMessageCollector();
+        const double t = juce::Time::getMillisecondCounterHiRes() * 0.001;
+        for (int ch = 1; ch <= 16; ++ch)
+        {
+            for (int cc : { 64 /* sustain off */, 123 /* all notes off */,
+                            120 /* all sound off */, 121 /* reset controllers */ })
+            {
+                juce::MidiMessage m (juce::MidiMessage::controllerEvent (ch, cc, 0));
+                m.setTimeStamp (t);
+                collector.addMessageToQueue (m);
+            }
+        }
+    }
 }
 
 //==============================================================================
@@ -570,6 +713,7 @@ bool AudioEngine::saveSession (const juce::File& file)
             juce::MemoryBlock mem;
             proc->getStateInformation (mem);
             slotObj->setProperty ("state", mem.toBase64Encoding());
+            slotObj->setProperty ("bypassed", isSlotBypassed (i));
         }
         else
         {
@@ -603,6 +747,12 @@ bool AudioEngine::loadSession (const juce::File& file, juce::String& errorMessag
     setFaderGain ((float) state->getProperty ("volume"));
     setFaderMute ((bool) state->getProperty ("mute"));
 
+   #if JUCE_MAC
+    // VALHost is authoritative for the restored value: mirror it onto VALDriver
+    // so the system volume HUD agrees with the freshly loaded fader position.
+    syncVolumeToDriver();
+   #endif
+
     auto* slots = state->getProperty ("slots").getArray();
     if (slots != nullptr)
     {
@@ -627,6 +777,7 @@ bool AudioEngine::loadSession (const juce::File& file, juce::String& errorMessag
                         if (activeNodes[i] != nullptr)
                             activeNodes[i]->getProcessor()->setStateInformation (mem.getData(), (int) mem.getSize());
                     }
+                    setSlotBypassed (i, (bool) slotObj->getProperty ("bypassed"));
                 }
                 else
                 {
@@ -718,3 +869,36 @@ void AudioEngine::handleNoteOff (juce::MidiKeyboardState* /*state*/, int midiCha
         graphPlayer->getMidiMessageCollector().addMessageToQueue (m);
     }
 }
+
+//==============================================================================
+#if JUCE_MAC
+
+void AudioEngine::setVolumeFromUI (float gain)
+{
+    setFaderGain (gain);
+    if (systemVolumeLink)
+        systemVolumeLink->pushVolume (positionForGain (gain));
+}
+
+void AudioEngine::setMuteFromUI (bool mute)
+{
+    setFaderMute (mute);
+    if (systemVolumeLink)
+        systemVolumeLink->pushMute (mute);
+}
+
+void AudioEngine::syncVolumeToDriver()
+{
+    if (systemVolumeLink)
+    {
+        systemVolumeLink->pushVolume (positionForGain (getFaderGain()));
+        systemVolumeLink->pushMute (getFaderMute());
+    }
+}
+
+#else  // not JUCE_MAC: keep the UI entry points working as plain fader setters.
+
+void AudioEngine::setVolumeFromUI (float gain) { setFaderGain (gain); }
+void AudioEngine::setMuteFromUI (bool mute)    { setFaderMute (mute); }
+
+#endif // JUCE_MAC

@@ -17,12 +17,35 @@ juce_add_gui_app(VALHost
     BUNDLE_ID "com.val.valhost"
     IS_COPY_STEP_ENABLED TRUE
     ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Source/icon.png"
+    HARDENED_RUNTIME_ENABLED TRUE
+    # Each entry below becomes a key in the Hardened Runtime entitlements file:
+    #  - cs.disable-library-validation: lets Hardened Runtime load third-party
+    #    AU/VST3/LV2 plug-ins signed (or unsigned) by other developers; without it
+    #    Gatekeeper/AMFI blocks every plug-in load once notarized.
+    #  - device.audio-input: MANDATORY with Hardened Runtime to read ANY audio
+    #    input — "VALHost 2ch" and real inputs are all "microphones" to macOS.
+    #    Without it AVCaptureDevice audio access is denied SILENTLY: no permission
+    #    prompt, no entry in System Settings > Microphone, and the engine receives
+    #    nothing but silence from the input device. The NSMicrophoneUsageDescription
+    #    string (required alongside it) lives in Source/Info.plist; the prompt
+    #    itself is requested explicitly in VALHostApp.swift (ensureMicrophoneAccess).
+    HARDENED_RUNTIME_OPTIONS
+        com.apple.security.cs.disable-library-validation
+        com.apple.security.device.audio-input
+)
+
+# Pin the Xcode project to the Developer ID team so `xcodebuild` (and Xcode itself)
+# sign with the right identity for both local runs and distribution archives.
+set_target_properties(VALHost PROPERTIES
+    XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "ZS96FUR82T"
 )
 
 # App Sources
 target_sources(VALHost PRIVATE
     Source/AudioEngine.h
     Source/AudioEngine.cpp
+    Source/SystemVolumeLink.h
+    Source/SystemVolumeLink.mm
     Source/JuceInitializer.h
     Source/JuceInitializer.cpp
     Source/VALHostEngineBridge.h

@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import Combine
+import AppKit
 
 //==============================================================================
 struct ScannedPlugin: Identifiable, Hashable {
@@ -16,6 +17,9 @@ class VALHostState: ObservableObject {
     @Published var statusMessage: String = "Initializing..."
     @Published var leftPeak: Float = 0.0
     @Published var rightPeak: Float = 0.0
+    // Peak-hold markers: the highest recent level, frozen briefly then decaying.
+    @Published var leftPeakHold: Float = 0.0
+    @Published var rightPeakHold: Float = 0.0
     
     // Mixer State
     @Published var volume: Double = 1.0
@@ -26,6 +30,8 @@ class VALHostState: ObservableObject {
     @Published var effectNames: [String] = Array(repeating: "Select Effect...", count: 4)
     @Published var isInstrumentLoaded: Bool = false
     @Published var isEffectLoaded: [Bool] = Array(repeating: false, count: 4)
+    // Per-slot bypass, indexed by slot (0 = instrument, 1-4 = effects).
+    @Published var isBypassed: [Bool] = Array(repeating: false, count: 5)
     @Published var selectedSlot: Int? = 0
     @Published var selectedPluginId: UUID? = nil
 
@@ -43,6 +49,34 @@ class VALHostState: ObservableObject {
     // seconds so the 30 FPS level-poll does not immediately overwrite them with
     // the idle "ready" message.
     private var statusHoldUntil: Date = .distantPast
+
+    // Peak-hold ballistics: a new peak freezes the marker for `peakHoldTime`,
+    // after which it falls back at `peakDecayDbPerSec` until it meets the signal.
+    private let peakHoldTime: TimeInterval = 1.0
+    private let peakDecayDbPerSec: Float = 20
+    private var leftHoldUntil: Date = .distantPast
+    private var rightHoldUntil: Date = .distantPast
+    private var lastPeakUpdate: Date = .distantPast
+
+    private var pollTimer: Timer?
+
+    // Single shared instance: the SwiftUI views and the AppKit status-bar item
+    // all observe the same state and the same polling.
+    static let shared = VALHostState()
+
+    // Set by ContentView; lets the AppKit menu-bar item recreate the main window
+    // via SwiftUI's openWindow when no window object survives a close.
+    var openMainWindowRequest: (() -> Void)?
+
+    init() {
+        // Own the 30 FPS level/CPU polling here (rather than in a view) so the
+        // menu-bar meter keeps updating even when the main window is closed.
+        let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            self?.pollLevelsAndCpu()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        pollTimer = t
+    }
 
     func flashStatus(_ message: String, seconds: TimeInterval = 4) {
         statusMessage = message
@@ -79,7 +113,11 @@ class VALHostState: ObservableObject {
         }
         self.effectNames = tempNames
         self.isEffectLoaded = tempLoaded
-        
+
+        for i in 0..<5 {
+            self.isBypassed[i] = VALHostEngine.sharedInstance().isBypassed(atSlot: Int32(i))
+        }
+
         self.volume = Double(VALHostEngine.sharedInstance().getVolume())
         self.isMute = VALHostEngine.sharedInstance().getMute()
     }
@@ -92,7 +130,40 @@ class VALHostState: ObservableObject {
                 self.flashStatus("Error loading plugin: \(err ?? "Unknown error")")
             }
             refreshSlots()
+            saveLastSession()
         }
+    }
+
+    // Toggle bypass for a slot and persist it.
+    func toggleBypass(slot: Int) {
+        guard slot >= 0 && slot < isBypassed.count else { return }
+        isBypassed[slot].toggle()
+        VALHostEngine.sharedInstance().setBypass(atSlot: Int32(slot), bypassed: isBypassed[slot])
+        saveLastSession()
+    }
+
+    // MIDI panic: release all (stuck/sustained) notes on every plugin.
+    func panic() {
+        VALHostEngine.sharedInstance().sendAllNotesOff()
+        activeTouches.removeAll()
+    }
+
+    // MARK: - Auto-recall (restore the last session on next launch)
+    private var lastSessionPath: String {
+        let dir = NSHomeDirectory() + "/Library/Application Support/VALHost"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return dir + "/last_session.valhost"
+    }
+
+    func saveLastSession() {
+        _ = VALHostEngine.sharedInstance().saveSession(toFile: lastSessionPath)
+    }
+
+    func loadLastSession() {
+        guard FileManager.default.fileExists(atPath: lastSessionPath) else { return }
+        var err: NSString?
+        _ = VALHostEngine.sharedInstance().loadSession(fromFile: lastSessionPath, error: &err)
+        refreshSlots()
     }
 
     func triggerScan() {
@@ -120,10 +191,48 @@ class VALHostState: ObservableObject {
         self.cpuUsage = VALHostEngine.sharedInstance().getCpuUsage()
         self.leftPeak = VALHostEngine.sharedInstance().getLeftLevel()
         self.rightPeak = VALHostEngine.sharedInstance().getRightLevel()
-        
+
+        // Mirror volume/mute changes that arrived from outside the app — e.g. the
+        // macOS volume keys acting on VALDriver — so the fader and MUTE button
+        // follow. The epsilon guard keeps a live drag from fighting the poll.
+        let extVolume = Double(VALHostEngine.sharedInstance().getVolume())
+        if abs(extVolume - self.volume) > 0.0005 {
+            self.volume = extVolume
+        }
+        let extMute = VALHostEngine.sharedInstance().getMute()
+        if extMute != self.isMute {
+            self.isMute = extMute
+        }
+
+        updatePeakHolds()
+
         if !self.isScanning && Date() >= self.statusHoldUntil {
             self.statusMessage = "\(self.plugins.count) plug-ins scanned and ready."
         }
+    }
+
+    // Advance both peak-hold markers using real elapsed time, so the fall-back
+    // speed is independent of frame jitter.
+    private func updatePeakHolds() {
+        let now = Date()
+        let dt = lastPeakUpdate == .distantPast
+            ? 0 : Float(now.timeIntervalSince(lastPeakUpdate))
+        lastPeakUpdate = now
+        (leftPeakHold, leftHoldUntil) = steppedHold(current: leftPeak, hold: leftPeakHold, holdUntil: leftHoldUntil, now: now, dt: dt)
+        (rightPeakHold, rightHoldUntil) = steppedHold(current: rightPeak, hold: rightPeakHold, holdUntil: rightHoldUntil, now: now, dt: dt)
+    }
+
+    private func steppedHold(current: Float, hold: Float, holdUntil: Date, now: Date, dt: Float) -> (Float, Date) {
+        if current >= hold {
+            // New (or matched) peak — freeze the marker here.
+            return (current, now.addingTimeInterval(peakHoldTime))
+        }
+        if now < holdUntil {
+            return (hold, holdUntil)          // still within the hold window
+        }
+        // Hold expired: decay in dB, but never below the live signal.
+        let decayedDb = MeterScale.db(forLinear: hold) - peakDecayDbPerSec * dt
+        return (max(current, powf(10, decayedDb / 20)), holdUntil)
     }
 }
 
@@ -134,7 +243,7 @@ enum MeterScale {
     static let maxDb: Float = 6     // top — headroom above 0 dBFS so "over" is visible
     static let yellowDb: Float = -6  // green -> yellow (approaching clipping)
     static let redDb: Float = 0     // yellow -> red (0 dBFS = clipping / over)
-    static let marks: [Float] = [0, -6, -12, -24, -48]
+    static let marks: [Float] = [0, -6, -12, -18, -24, -30, -36, -42, -48, -54]
 
     static func fraction(forDb db: Float) -> CGFloat {
         CGFloat(max(0, min(1, (db - minDb) / (maxDb - minDb))))
@@ -152,10 +261,11 @@ enum MeterScale {
 }
 
 //==============================================================================
-// A single channel bar: fills bottom-up on the dBFS scale, coloured by fixed
-// zones (green / yellow near clipping / red at and above 0 dBFS).
-struct VerticalLevelMeter: View {
+// A single channel bar: fills left-to-right on the dBFS scale, coloured by
+// fixed zones (green / yellow near clipping / red at and above 0 dBFS).
+struct HorizontalLevelMeter: View {
     var val: Float
+    var peakHold: Float = 0
 
     private var zonedGradient: LinearGradient {
         let y = MeterScale.fraction(forDb: MeterScale.yellowDb)
@@ -170,67 +280,92 @@ struct VerticalLevelMeter: View {
             .init(color: yellow, location: r - 0.001),
             .init(color: red, location: r),
             .init(color: red, location: 1),
-        ], startPoint: .bottom, endPoint: .top)
+        ], startPoint: .leading, endPoint: .trailing)
     }
 
     var body: some View {
         GeometryReader { geometry in
-            let fillH = MeterScale.fraction(forDb: MeterScale.db(forLinear: val)) * geometry.size.height
-            ZStack(alignment: .bottom) {
+            let width = geometry.size.width
+            let fillW = MeterScale.fraction(forDb: MeterScale.db(forLinear: val)) * width
+            let holdDb = MeterScale.db(forLinear: peakHold)
+            let holdX = MeterScale.fraction(forDb: holdDb) * width
+            ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 2)
                     .fill(Color.black.opacity(0.55))
 
                 // Show the zoned ladder only up to the current level.
                 zonedGradient
                     .mask(
-                        VStack(spacing: 0) {
+                        HStack(spacing: 0) {
+                            Rectangle().frame(width: max(0, fillW))
                             Spacer(minLength: 0)
-                            Rectangle().frame(height: max(0, fillH))
                         }
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 2))
+
+                // Peak-hold marker: a thin line at the held level, coloured by zone.
+                if holdDb > MeterScale.minDb {
+                    Rectangle()
+                        .fill(MeterScale.color(forDb: holdDb))
+                        .frame(width: 2)
+                        .offset(x: min(max(0, holdX - 1), width - 2))
+                }
             }
+            .clipShape(RoundedRectangle(cornerRadius: 2))
         }
     }
 }
 
 //==============================================================================
-// Stereo output meter: two zoned bars and a calibrated dB scale.
-struct OutputMeterView: View {
+// Stereo output meter: two horizontal zoned bars (L over R) and a calibrated
+// dBFS scale running the full width beneath them. Going wide gives each bar a
+// long travel, so small level changes are easy to read.
+struct HorizontalOutputMeterView: View {
     var leftPeak: Float
     var rightPeak: Float
+    var leftHold: Float = 0
+    var rightHold: Float = 0
 
-    private let meterHeight: CGFloat = 140
-    private let meterBarWidth: CGFloat = 22
+    private let labelWidth: CGFloat = 12
+    private let labelGap: CGFloat = 6
+    private let barHeight: CGFloat = 12
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .center, spacing: 4) {
-                HStack(spacing: 3) {
-                    VerticalLevelMeter(val: leftPeak)
-                    VerticalLevelMeter(val: rightPeak)
-                }
-                .frame(width: meterBarWidth, height: meterHeight)
+        VStack(spacing: 5) {
+            channelRow(label: "L", value: leftPeak, hold: leftHold)
+            channelRow(label: "R", value: rightPeak, hold: rightHold)
 
-                // Calibrated dBFS scale
-                ZStack {
-                    ForEach(MeterScale.marks, id: \.self) { mark in
-                        Text(String(format: "%.0f", mark))
-                            .font(.system(size: 7, design: .monospaced))
-                            .foregroundColor(mark >= 0 ? .red.opacity(0.8) : .gray.opacity(0.6))
-                            .offset(y: (0.5 - MeterScale.fraction(forDb: mark)) * meterHeight)
+            // Calibrated dBFS scale, aligned to the bars (offset past the labels).
+            HStack(spacing: labelGap) {
+                Spacer().frame(width: labelWidth)
+                GeometryReader { geo in
+                    ZStack {
+                        ForEach(MeterScale.marks, id: \.self) { mark in
+                            VStack(spacing: 1) {
+                                Rectangle()
+                                    .fill(mark >= 0 ? Color.red.opacity(0.7) : Color.gray.opacity(0.45))
+                                    .frame(width: 1, height: 4)
+                                Text(String(format: "%.0f", mark))
+                                    .font(.system(size: 7, design: .monospaced))
+                                    .foregroundColor(mark >= 0 ? .red.opacity(0.8) : .gray.opacity(0.6))
+                            }
+                            .position(x: MeterScale.fraction(forDb: mark) * geo.size.width, y: 8)
+                        }
                     }
                 }
-                .frame(width: 16, height: meterHeight)
+                .frame(height: 16)
             }
+        }
+    }
 
-            HStack(spacing: 3) {
-                Text("L").frame(width: 9)
-                Text("R").frame(width: 9)
-            }
-            .font(.system(size: 7, weight: .bold))
-            .foregroundColor(.gray.opacity(0.7))
-            .frame(width: meterBarWidth)
+    private func channelRow(label: String, value: Float, hold: Float) -> some View {
+        HStack(spacing: labelGap) {
+            Text(label)
+                .font(.system(size: 8, weight: .bold))
+                .foregroundColor(.gray.opacity(0.7))
+                .frame(width: labelWidth)
+            HorizontalLevelMeter(val: value, peakHold: hold)
+                .frame(height: barHeight)
         }
     }
 }
@@ -366,7 +501,21 @@ struct SlotRow: View {
                 )
             }
             .buttonStyle(.plain)
-            
+
+            // Bypass button — passes a loaded effect through unprocessed (keeps it
+            // and its settings) for quick A/B; on the instrument slot it silences it.
+            Button(action: {
+                state.toggleBypass(slot: slotIndex)
+            }) {
+                Text("B")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 26, height: 32)
+            }
+            .buttonStyle(.bordered)
+            .tint(state.isBypassed[slotIndex] ? .orange : .gray)
+            .disabled(!isLoaded)
+            .help("Bypass this slot")
+
             // Edit button — opens the plugin's editor (the engine automatically uses
             // a safe generic editor for plugins whose native view would crash)
             Button(action: {
@@ -384,6 +533,7 @@ struct SlotRow: View {
             Button(action: {
                 VALHostEngine.sharedInstance().unloadPlugin(atSlot: Int32(slotIndex))
                 state.refreshSlots()
+                state.saveLastSession()
             }) {
                 Text("X")
                     .font(.system(size: 11, weight: .bold))
@@ -396,15 +546,15 @@ struct SlotRow: View {
 }
 
 //==============================================================================
-struct CustomVerticalFader: View {
+struct CustomHorizontalFader: View {
     @Binding var value: Double // Range 0.0 to 1.25
     let onChanged: (Double) -> Void
-    
+
     // Piecewise-linear dB scale defined by (position, dB) anchors, ascending.
     // Position 0 == true silence (-inf dB); each segment is linear in dB.
-    //   +2 .. -6 dB  -> top half of the travel
-    //   -6 .. -30 dB -> next 0.3
-    //   -30 .. floor -> bottom 0.2
+    //   left   : -inf .. -30 dB -> first 0.2 of the travel
+    //   middle : -30 .. -6 dB   -> next 0.3
+    //   right  : -6 .. +2 dB    -> right half, for fine control near unity gain
     private static let anchors: [(p: CGFloat, db: Double)] = [
         (0.0, -96),
         (0.2, -30),
@@ -414,6 +564,12 @@ struct CustomVerticalFader: View {
     private static var minDb: Double { anchors.first!.db }
     private static var maxDb: Double { anchors.last!.db }
     private static var maxGain: Double { pow(10.0, maxDb / 20.0) }
+
+    // dB tick marks drawn beneath the track.
+    private static let ticks: [(db: Double, label: String)] = [
+        (-96, "-∞"), (-48, "-48"), (-30, "-30"), (-24, "-24"), (-18, "-18"),
+        (-12, "-12"), (-6, "-6"), (-3, "-3"), (0, "0"), (2, "+2"),
+    ]
 
     // dB -> normalized fader position (0...1).
     private static func positionForDb(_ db: Double) -> CGFloat {
@@ -457,75 +613,88 @@ struct CustomVerticalFader: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let height = geometry.size.height
+            let width = geometry.size.width
 
-            // Calculate handle Y offset (logarithmic / dB-based position)
+            // Handle X offset (logarithmic / dB-based position, left = silence).
             let normVal = Self.positionForGain(value)
-            let handleHeight: CGFloat = 18
-            let trackHeight = max(0, height - handleHeight)
-            let yOffset = trackHeight * (1.0 - normVal)
-            
-            ZStack(alignment: .top) {
-                // Fader Track background
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color(white: 0.12))
-                    .frame(width: 8, height: height)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 3)
-                            .stroke(Color.black.opacity(0.5), lineWidth: 1)
-                    )
-                
-                // Track highlight (from bottom to current value)
-                VStack {
-                    Spacer()
-                    RoundedRectangle(cornerRadius: 3)
+            let handleWidth: CGFloat = 20
+            let trackWidth = max(0, width - handleWidth)
+            let xOffset = trackWidth * normVal
+
+            VStack(spacing: 5) {
+                ZStack(alignment: .leading) {
+                    // Fader track background
+                    Capsule()
+                        .fill(Color(white: 0.12))
+                        .frame(height: 8)
+                        .overlay(Capsule().stroke(Color.black.opacity(0.5), lineWidth: 1))
+                        .padding(.horizontal, handleWidth / 2)
+
+                    // Track highlight (from left up to current value)
+                    Capsule()
                         .fill(
                             LinearGradient(
-                                colors: [Color.teal, Color.teal.opacity(0.6)],
+                                colors: [Color.teal.opacity(0.6), Color.teal],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(0, trackWidth * normVal), height: 6)
+                        .padding(.leading, handleWidth / 2)
+
+                    // Fader Handle (Knob)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(white: 0.45), Color(white: 0.28), Color(white: 0.18)],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
                         )
-                        .frame(width: 6, height: max(0, trackHeight * normVal))
-                }
-                .padding(.bottom, handleHeight / 2)
-                .frame(height: height)
-                
-                // Fader Handle (Knob)
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color(white: 0.45), Color(white: 0.28), Color(white: 0.18)],
-                            startPoint: .top,
-                            endPoint: .bottom
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.black, lineWidth: 1.2)
                         )
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.black, lineWidth: 1.2)
-                    )
-                    .overlay(
-                        // Center horizontal stripe on handle
-                        Rectangle()
-                            .fill(Color.teal)
-                            .frame(height: 2)
-                    )
-                    .shadow(color: Color.black.opacity(0.6), radius: 2, x: 0, y: 1.5)
-                    .frame(width: 26, height: handleHeight)
-                    .offset(y: yOffset)
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { gesture in
-                                let dragY = gesture.location.y - (handleHeight / 2)
-                                let clampedY = max(0, min(dragY, trackHeight))
-                                let percent = trackHeight > 0 ? (1.0 - (clampedY / trackHeight)) : 0.0
-                                let val = Self.gainForPosition(percent)
-                                self.value = val
-                                onChanged(val)
-                            }
-                    )
+                        .overlay(
+                            // Center vertical stripe on handle
+                            Rectangle()
+                                .fill(Color.teal)
+                                .frame(width: 2)
+                        )
+                        .shadow(color: Color.black.opacity(0.6), radius: 2, x: 0, y: 1.5)
+                        .frame(width: handleWidth, height: 26)
+                        .offset(x: xOffset)
+                }
+                .frame(height: 26)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { gesture in
+                            let dragX = gesture.location.x - (handleWidth / 2)
+                            let clampedX = max(0, min(dragX, trackWidth))
+                            let percent = trackWidth > 0 ? (clampedX / trackWidth) : 0.0
+                            let val = Self.gainForPosition(percent)
+                            self.value = val
+                            onChanged(val)
+                        }
+                )
+
+                // dB scale ticks beneath the track
+                ZStack {
+                    ForEach(Self.ticks, id: \.db) { tick in
+                        VStack(spacing: 1) {
+                            Rectangle()
+                                .fill(Color.gray.opacity(0.5))
+                                .frame(width: 1, height: 4)
+                            Text(tick.label)
+                                .font(.system(size: 7, design: .monospaced))
+                                .foregroundColor(.gray.opacity(0.7))
+                        }
+                        .position(x: handleWidth / 2 + trackWidth * Self.positionForDb(tick.db), y: 8)
+                    }
+                }
+                .frame(height: 16)
             }
-            .frame(width: 26)
         }
     }
 }
@@ -627,11 +796,12 @@ struct MixerStripView: View {
 
             Spacer(minLength: 12)
 
-            // Mute
+            // Mute + MIDI Panic
             HStack(spacing: 8) {
                 Button(action: {
                     state.isMute.toggle()
                     VALHostEngine.sharedInstance().setMute(state.isMute)
+                    state.saveLastSession()
                 }) {
                     Text("MUTE")
                         .font(.system(size: 11, weight: .bold))
@@ -640,34 +810,54 @@ struct MixerStripView: View {
                 }
                 .tint(state.isMute ? .red : .gray)
                 .buttonStyle(.borderedProminent)
+
+                Button(action: {
+                    state.panic()
+                }) {
+                    Text("PANIC")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 84)
+                        .frame(height: 26)
+                }
+                .tint(.orange)
+                .buttonStyle(.bordered)
+                .help("MIDI panic — stop all stuck/hanging notes")
             }
             .padding(.horizontal, 8)
 
-            // Fader + Meter Row
-            HStack(spacing: 16) {
-                Spacer()
-                
-                // Custom Vertical Fader (Teal Highlight, 3D Handle, Vertical Drag)
-                VStack(spacing: 4) {
+            // Volume Fader — full-width horizontal travel for precise setting
+            VStack(spacing: 6) {
+                HStack {
+                    Text("VOLUME")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.gray)
+                    Spacer()
                     Text(faderValueToDb(state.volume) <= -96.0
                          ? "-∞ dB"
                          : String(format: "%.1f dB", faderValueToDb(state.volume)))
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.gray)
-                    
-                    CustomVerticalFader(value: $state.volume) { val in
-                        VALHostEngine.sharedInstance().setVolume(Float(val))
-                    }
-                    .frame(height: 140)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.teal)
                 }
-                .frame(width: 44)
-
-                // Peak Level Meter (professional dBFS metering with calibrated scale)
-                OutputMeterView(leftPeak: state.leftPeak, rightPeak: state.rightPeak)
-                
-                Spacer()
+                CustomHorizontalFader(value: $state.volume) { val in
+                    VALHostEngine.sharedInstance().setVolume(Float(val))
+                }
+                .frame(height: 48)
             }
-            .frame(height: 165)
+            .padding(.horizontal, 16)
+
+            // Peak Level Meter — full-width dBFS metering with calibrated scale
+            VStack(spacing: 6) {
+                HStack {
+                    Text("OUTPUT")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.gray)
+                    Spacer()
+                }
+                HorizontalOutputMeterView(leftPeak: state.leftPeak, rightPeak: state.rightPeak,
+                                          leftHold: state.leftPeakHold, rightHold: state.rightPeakHold)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 4)
         }
         .frame(width: 420)
         .padding(.vertical, 8)
@@ -858,12 +1048,88 @@ struct StatusBarView: View {
 }
 
 //==============================================================================
-struct ContentView: View {
-    @StateObject private var state = VALHostState()
-    @State private var showHelp = false
+// MARK: - Menu Bar (status item)
+//==============================================================================
 
-    // Polling timer (30 FPS)
-    let timer = Timer.publish(every: 0.033, on: .main, in: .common).autoconnect()
+// Drop-down panel shown by the menu-bar status item (inside an NSPopover): live
+// meter, the same volume fader as the main strip, a mute toggle and a button
+// that brings the full window forward. `openMainWindow` is supplied by the
+// AppDelegate because @Environment(\.openWindow) is not wired up inside a
+// stand-alone NSHostingController.
+struct MenuBarPanelView: View {
+    @ObservedObject var state: VALHostState
+    var openMainWindow: () -> Void = {}
+
+    private var volumeDbText: String {
+        let db = state.volume <= 0.0 ? -Double.infinity : 20.0 * log10(state.volume)
+        return db <= -96.0 ? "-∞ dB" : String(format: "%.1f dB", db)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("VALHost")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.teal)
+                Spacer()
+                Text(volumeDbText)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.teal)
+            }
+
+            HorizontalOutputMeterView(leftPeak: state.leftPeak, rightPeak: state.rightPeak,
+                                      leftHold: state.leftPeakHold, rightHold: state.rightPeakHold)
+
+            CustomHorizontalFader(value: $state.volume) { val in
+                VALHostEngine.sharedInstance().setVolume(Float(val))
+            }
+            .frame(height: 48)
+
+            HStack(spacing: 8) {
+                Button(action: {
+                    state.isMute.toggle()
+                    VALHostEngine.sharedInstance().setMute(state.isMute)
+                    state.saveLastSession()
+                }) {
+                    Text(state.isMute ? "Unmute" : "Mute")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 24)
+                }
+                .tint(state.isMute ? .red : .gray)
+                .buttonStyle(.borderedProminent)
+
+                Button(action: {
+                    openMainWindow()
+                }) {
+                    Label("Open Window", systemImage: "macwindow")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 24)
+                }
+                .buttonStyle(.bordered)
+                .tint(.teal)
+            }
+
+            Divider()
+
+            Button("Quit VALHost") {
+                NSApp.terminate(nil)
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11))
+            .foregroundColor(.gray)
+        }
+        .padding(16)
+        .frame(width: 300)
+    }
+}
+
+//==============================================================================
+struct ContentView: View {
+    @ObservedObject var state: VALHostState
+    @State private var showHelp = false
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 12) {
@@ -897,9 +1163,8 @@ struct ContentView: View {
         .onAppear {
             state.refreshPlugins()
             state.refreshSlots()
-        }
-        .onReceive(timer) { _ in
-            state.pollLevelsAndCpu()
+            state.loadLastSession()   // restore where you left off
+            state.openMainWindowRequest = { openWindow(id: "main") }
         }
         .sheet(isPresented: $showHelp) {
             HelpView(isPresented: $showHelp)
@@ -1041,61 +1306,64 @@ struct HelpView: View {
                     para("**Microphone permission:** the first time VALHost uses an audio input, macOS asks for **Microphone** access — this is required for *any* input, including a virtual cable. Click **Allow**. You can change this later under **System Settings ▸ Privacy & Security ▸ Microphone**.")
 
                     // 7 ---------------------------------------------------------
-                    section("7.  Processing Other Apps' Audio — Virtual Audio Cable (BlackHole)")
-                    para("VALHost processes whatever arrives at its **audio input**. macOS does not normally let one app capture another app's playback, so to run audio from Spotify, a browser, a DAW, or the whole system through VALHost's effects, you need a **virtual audio cable**. The free, widely used choice is **BlackHole**.")
+                    section("7.  Processing Other Apps' Audio — Virtual Audio Cable (VALDriver)")
+                    para("VALHost processes whatever arrives at its **audio input**. macOS does not normally let one app capture another app's playback, so to run audio from Spotify, a browser, a DAW, or the whole system through VALHost's effects, you need a **virtual audio cable**. VALHost's companion driver for this is **VALDriver** — a small, free, separately installed driver built for this purpose, available wherever you downloaded VALHost (BlackHole is a popular third-party alternative that does the same job — if you already use it, just substitute “BlackHole 2ch” for “VALHost 2ch” in the steps below).")
 
-                    sub("Step 1 — Install BlackHole")
-                    bullet("Download and install **BlackHole 2ch** (the 2-channel version is ideal for a stereo strip) from the official BlackHole project (existential.audio / GitHub).")
-                    bullet("After installation it appears as a new audio device named **“BlackHole 2ch.”** No audio is audible through it directly — it is a virtual pipe between apps.")
+                    sub("Step 1 — Install VALDriver")
+                    bullet("Download and install **VALDriver** — it installs in seconds and needs no restart.")
+                    bullet("After installation it appears as a new audio device named **“VALHost 2ch.”** No audio is audible through it directly — it is a virtual pipe between apps. (This is the separate driver device, not the VALHost app itself — the name is similar on purpose, since the driver was made for VALHost.)")
 
-                    sub("Step 2 — Send the source audio INTO BlackHole")
+                    sub("Step 2 — Send the source audio INTO VALDriver")
                     para("Decide what you want to process:")
-                    bullet("**Whole system audio:** open **System Settings ▸ Sound ▸ Output** and select **BlackHole 2ch**. Everything your Mac plays now flows into BlackHole (and is silent on your speakers until VALHost passes it on — that is expected).")
-                    bullet("**A single app (e.g. a DAW):** set that app's own audio **output** to **BlackHole 2ch** in its preferences, and leave the macOS system output on your speakers.")
+                    bullet("**Whole system audio:** open **System Settings ▸ Sound ▸ Output** and select **VALHost 2ch**. Everything your Mac plays now flows into VALDriver (and is silent on your speakers until VALHost passes it on — that is expected).")
+                    bullet("**A single app (e.g. a DAW):** set that app's own audio **output** to **VALHost 2ch** in its preferences, and leave the macOS system output on your speakers.")
 
                     sub("Step 3 — Set VALHost's input and output")
                     para("Open **Audio Settings** in VALHost and set:")
-                    bullet("**Input = BlackHole 2ch** — this is the audio coming from the source app/system.")
+                    bullet("**Input = VALHost 2ch** — this is the audio coming from the source app/system, via VALDriver.")
                     bullet("**Output = your real device** — e.g. *MacBook Pro Speakers*, your headphones, or your audio interface. This is what you will actually hear.")
-                    mono("Source app / System  →  BlackHole 2ch  →  VALHost (Input)\nVALHost effects + fader  →  VALHost (Output)  →  Speakers / Headphones")
+                    mono("Source app / System  →  VALDriver (“VALHost 2ch”)  →  VALHost (Input)\nVALHost effects + fader  →  VALHost (Output)  →  Speakers / Headphones")
                     para("That's it — audio from the source now passes through VALHost's plug-in chain and out to your speakers.")
 
                     sub("Step 4 (optional) — Hear system audio AND keep monitoring")
-                    para("If you routed the **whole system** into BlackHole, your normal alerts and other apps also go silent except through VALHost. If you want a copy to reach your speakers directly as well, create a **Multi-Output Device**:")
+                    para("If you routed the **whole system** into VALDriver, your normal alerts and other apps also go silent except through VALHost. If you want a copy to reach your speakers directly as well, create a **Multi-Output Device**:")
                     bullet("Open **Audio MIDI Setup** (in /Applications/Utilities).")
-                    bullet("Click **+** ▸ **Create Multi-Output Device**, then tick both **BlackHole 2ch** and your **speakers/headphones**.")
-                    bullet("Set that Multi-Output Device as the macOS **system output**. BlackHole still feeds VALHost, while your speakers get the dry copy.")
+                    bullet("Click **+** ▸ **Create Multi-Output Device**, then tick both **VALHost 2ch** and your **speakers/headphones**.")
+                    bullet("Set that Multi-Output Device as the macOS **system output**. VALDriver still feeds VALHost, while your speakers get the dry copy.")
                     para("For most effect-processing use, Step 3 alone is enough; the Multi-Output Device is only needed for special monitoring setups.")
 
                     sub("Avoiding feedback loops")
-                    bullet("**Never set VALHost's output to BlackHole** while BlackHole is also its input — that creates an infinite loop and a loud howl.")
-                    bullet("Keep the source going **into** BlackHole and VALHost coming **out** to a real device. Input and output must be different devices.")
+                    bullet("**Never set VALHost's output to VALHost 2ch** while it is also its input — that creates an infinite loop and a loud howl.")
+                    bullet("Keep the source going **into** VALDriver and VALHost coming **out** to a real device. Input and output must be different devices.")
 
                     // 8 ---------------------------------------------------------
                     section("8.  Using VALHost as an Instrument Host")
                     bullet("Load a software instrument (AU/VST3/LV2 synth or sampler) into the **INST** slot.")
-                    bullet("Connect a MIDI keyboard, or select a MIDI input in **Audio Settings**. You can also use the on-screen keyboard at the bottom of the window.")
+                    bullet("Connect a MIDI keyboard, or select a MIDI input in **Audio Settings**. You can also use the on-screen keyboard at the bottom of the window — or play with your **computer keyboard** (A W S E D F… for the white/black keys, **Z / X** to shift octave down/up).")
                     bullet("Add effects in **FX 1–4** to process the instrument (reverb, EQ, compression, etc.).")
                     bullet("When an instrument is loaded, the audio input is ignored — the instrument is the source.")
 
                     // 9 ---------------------------------------------------------
                     section("9.  The Channel Strip")
                     bullet("**Slots.** Click a slot to choose a plug-in for it. The instrument list shows only instruments; effect slots show only effects.")
-                    bullet("**Editor.** Open a plug-in's own interface from its slot. If a plug-in has no usable native UI, VALHost shows a generic parameter editor instead.")
+                    bullet("**Bypass (B).** Temporarily passes a loaded effect through unprocessed — without unloading it or losing its settings — so you can A/B the sound with and without it. On the instrument slot, B silences the instrument.")
+                    bullet("**Editor (E).** Open a plug-in's own interface from its slot. If a plug-in has no usable native UI, VALHost shows a generic parameter editor instead.")
                     bullet("**Fader.** The level fader is calibrated in decibels with a natural feel: the **+2 dB … −6 dB** region occupies the top half of the travel for fine control near unity gain, **−6 … −30 dB** the next portion, and **−30 dB … −∞** the bottom. The very bottom is true silence (**−∞ dB**).")
                     bullet("**Mute.** Silences the output instantly.")
-                    bullet("**Meters.** The stereo meters show output level in dBFS. The scale turns yellow approaching −6 dBFS and red at 0 dBFS (clipping).")
+                    bullet("**Panic.** Sends an all-notes-off / all-sound-off to every plug-in — use it if a software instrument leaves a note hanging.")
+                    bullet("**Meters.** The stereo meters show output level in dBFS. The scale turns yellow approaching −6 dBFS and red at 0 dBFS (clipping). A peak-hold marker briefly freezes the highest recent level.")
 
                     // 10 --------------------------------------------------------
                     section("10.  Saving & Loading Sessions")
-                    para("Use **Save** and **Load** in the top bar to store and recall a complete setup — which plug-ins are loaded in each slot, their settings, and the fader/mute state — as a `.valhost` file.")
+                    para("Use **Save** and **Load** in the top bar to store and recall a complete setup — which plug-ins are loaded in each slot, their settings, bypass, and the fader/mute state — as a `.valhost` file.")
+                    para("VALHost also **remembers your last setup automatically** and restores it the next time you launch, so you pick up right where you left off.")
 
                     // 11 --------------------------------------------------------
                     section("11.  Troubleshooting")
-                    bullet("**No sound:** check that the correct **Output** device is selected, the **fader is up**, and **Mute** is off. If processing input, confirm the **Input** device and that audio is actually reaching BlackHole.")
+                    bullet("**No sound:** check that the correct **Output** device is selected, the **fader is up**, and **Mute** is off. If processing input, confirm the **Input** device and that audio is actually reaching VALDriver.")
                     bullet("**A plug-in doesn't appear:** confirm it's installed in the correct folder for its format (Section 3), is **arm64/Universal**, then rescan. Delete the cache files (Section 5) to force a clean scan.")
-                    bullet("**Input is silent:** make sure macOS granted **Microphone** permission, and that the source app/system output is set to **BlackHole 2ch**.")
-                    bullet("**Loud howling / feedback:** your input and output are the same device — set VALHost's output to a real speaker/headphone device, not back into BlackHole.")
+                    bullet("**Input is silent:** make sure macOS granted **Microphone** permission, and that the source app/system output is set to **VALHost 2ch** (VALDriver).")
+                    bullet("**Loud howling / feedback:** your input and output are the same device — set VALHost's output to a real speaker/headphone device, not back into VALDriver.")
                     bullet("**Crackles / dropouts:** increase the **buffer size** in Audio Settings.")
 
                     // Footer ----------------------------------------------------
