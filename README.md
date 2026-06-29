@@ -9,6 +9,8 @@ it can stream that audio straight into other applications.
 > Built from the ground up for Apple Silicon (universal arm64 + x86_64), with a
 > hardened-runtime, Developer-ID-signed, notarizable build pipeline.
 
+![VALHost screenshot](docs/screenshot.png)
+
 ---
 
 ## Features
