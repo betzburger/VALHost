@@ -43,12 +43,17 @@ namespace
 struct SystemVolumeLink::Impl
 {
     SystemVolumeLink& owner;
-    AudioObjectID device { kAudioObjectUnknown };
 
-    // Re-entrancy guards: the value we last wrote, so the listener can ignore the
-    // notification our own write provokes.
-    std::atomic<float> lastPushedScalar { -1.0f };
-    std::atomic<int>   lastPushedMute   { -1 };
+    // Written by reattach() on the HAL notification thread, read by push*() on
+    // the message thread.
+    std::atomic<AudioObjectID> device { kAudioObjectUnknown };
+
+    // Echo guards: the value we last wrote and whose change notification has not
+    // arrived yet. Each one swallows exactly ONE matching notification and is then
+    // cleared, so a later genuine change back to the same value (e.g. the mute key
+    // pressed twice after a UI mute) is never mistaken for an echo.
+    std::atomic<float> pendingEchoScalar { -1.0f };
+    std::atomic<int>   pendingEchoMute   { -1 };
 
     explicit Impl (SystemVolumeLink& o) : owner (o) {}
 
@@ -66,57 +71,89 @@ struct SystemVolumeLink::Impl
 
     void detachDevice()
     {
-        if (device != kAudioObjectUnknown)
+        const AudioObjectID old = device.exchange (kAudioObjectUnknown);
+        if (old != kAudioObjectUnknown)
         {
-            AudioObjectRemovePropertyListener (device, &kVolumeScalarAddr, &propProc, this);
-            AudioObjectRemovePropertyListener (device, &kMuteAddr,         &propProc, this);
-            device = kAudioObjectUnknown;
+            AudioObjectRemovePropertyListener (old, &kVolumeScalarAddr, &propProc, this);
+            AudioObjectRemovePropertyListener (old, &kMuteAddr,         &propProc, this);
         }
+        pendingEchoScalar.store (-1.0f);
+        pendingEchoMute.store (-1);
     }
 
     void reattach()
     {
         AudioObjectID found = findDeviceByUID (kValDriverUID);
-        if (found == device)
+        if (found == device.load())
             return;
 
         detachDevice();
-        device = found;
 
-        if (device != kAudioObjectUnknown)
+        if (found != kAudioObjectUnknown)
         {
-            AudioObjectAddPropertyListener (device, &kVolumeScalarAddr, &propProc, this);
-            AudioObjectAddPropertyListener (device, &kMuteAddr,         &propProc, this);
+            AudioObjectAddPropertyListener (found, &kVolumeScalarAddr, &propProc, this);
+            AudioObjectAddPropertyListener (found, &kMuteAddr,         &propProc, this);
+            device.store (found);
+
+            // The driver just appeared (at start, or installed/restarted while
+            // VALHost runs): make it agree with VALHost's current value.
+            if (owner.queryVolume)  pushVolume (owner.queryVolume());
+            if (owner.queryMute)    pushMute (owner.queryMute());
         }
     }
 
     void pushVolume (float scalar)
     {
-        if (device == kAudioObjectUnknown)
+        const AudioObjectID dev = device.load();
+        if (dev == kAudioObjectUnknown)
             return;
+
+        // Writing the value the driver already holds provokes no notification,
+        // so it must not arm the echo guard either.
+        Float32 current = 0.0f;
+        UInt32 size = sizeof (current);
+        if (AudioObjectGetPropertyData (dev, &kVolumeScalarAddr, 0, nullptr, &size, &current) == noErr
+             && std::abs (current - scalar) <= 1.0e-4f)
+            return;
+
         Float32 s = scalar;
-        lastPushedScalar.store (s);
-        AudioObjectSetPropertyData (device, &kVolumeScalarAddr, 0, nullptr, sizeof (s), &s);
+        pendingEchoScalar.store (s);
+        if (AudioObjectSetPropertyData (dev, &kVolumeScalarAddr, 0, nullptr, sizeof (s), &s) != noErr)
+            pendingEchoScalar.store (-1.0f);
     }
 
     void pushMute (bool mute)
     {
-        if (device == kAudioObjectUnknown)
+        const AudioObjectID dev = device.load();
+        if (dev == kAudioObjectUnknown)
             return;
+
         UInt32 m = mute ? 1 : 0;
-        lastPushedMute.store ((int) m);
-        AudioObjectSetPropertyData (device, &kMuteAddr, 0, nullptr, sizeof (m), &m);
+        UInt32 current = 0;
+        UInt32 size = sizeof (current);
+        if (AudioObjectGetPropertyData (dev, &kMuteAddr, 0, nullptr, &size, &current) == noErr
+             && (current != 0) == mute)
+            return;
+
+        pendingEchoMute.store ((int) m);
+        if (AudioObjectSetPropertyData (dev, &kMuteAddr, 0, nullptr, sizeof (m), &m) != noErr)
+            pendingEchoMute.store (-1);
     }
 
     void volumeChangedExternally()
     {
-        if (device == kAudioObjectUnknown)
+        const AudioObjectID dev = device.load();
+        if (dev == kAudioObjectUnknown)
             return;
         Float32 scalar = 0.0f;
         UInt32 size = sizeof (scalar);
-        if (AudioObjectGetPropertyData (device, &kVolumeScalarAddr, 0, nullptr, &size, &scalar) != noErr)
+        if (AudioObjectGetPropertyData (dev, &kVolumeScalarAddr, 0, nullptr, &size, &scalar) != noErr)
             return;
-        if (std::abs (scalar - lastPushedScalar.load()) <= 1.0e-4f)
+
+        // Consume the pending echo either way: a matching value is our own push,
+        // anything else means an outside change superseded it.
+        const float echo = pendingEchoScalar.exchange (-1.0f);
+        if (echo >= 0.0f && std::abs (scalar - echo) <= 1.0e-4f)
             return;                              // echo of our own push
         if (owner.onExternalVolume)
             owner.onExternalVolume (scalar);
@@ -124,13 +161,16 @@ struct SystemVolumeLink::Impl
 
     void muteChangedExternally()
     {
-        if (device == kAudioObjectUnknown)
+        const AudioObjectID dev = device.load();
+        if (dev == kAudioObjectUnknown)
             return;
         UInt32 m = 0;
         UInt32 size = sizeof (m);
-        if (AudioObjectGetPropertyData (device, &kMuteAddr, 0, nullptr, &size, &m) != noErr)
+        if (AudioObjectGetPropertyData (dev, &kMuteAddr, 0, nullptr, &size, &m) != noErr)
             return;
-        if ((int) m == lastPushedMute.load())
+
+        const int echo = pendingEchoMute.exchange (-1);
+        if (echo >= 0 && (m != 0) == (echo != 0))
             return;                              // echo of our own push
         if (owner.onExternalMute)
             owner.onExternalMute (m != 0);

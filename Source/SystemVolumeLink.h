@@ -28,6 +28,12 @@ public:
     std::function<void (float scalar)> onExternalVolume;   // scalar in [0,1]
     std::function<void (bool  mute)>   onExternalMute;
 
+    // Queried whenever VALDriver becomes available (at start(), or when it shows
+    // up later) so the driver can be brought in line with VALHost's current
+    // value. May be called on a Core Audio callback thread.
+    std::function<float()> queryVolume;                    // scalar in [0,1]
+    std::function<bool()>  queryMute;
+
     // Begin/stop tracking the VALDriver device. Safe to call when the driver is
     // not installed (start() simply stays unbound until it appears).
     void start();

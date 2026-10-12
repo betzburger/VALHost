@@ -38,6 +38,10 @@
 - (BOOL)getMute;
 - (void)setMute:(BOOL)mute;
 
+// Plays the master test tone (440 Hz) through the graph, so it is as loud as the
+// current volume setting.
+- (void)playTestTone NS_SWIFT_NAME(playTestTone());
+
 // Metering & Info
 - (float)getLeftLevel;
 - (float)getRightLevel;

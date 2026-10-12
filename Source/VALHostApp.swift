@@ -29,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         VALHostState.shared.saveLastSession()
+        // Tear the engine down explicitly: the shared bridge is never deallocated,
+        // so otherwise plugins are never released and the audio settings not saved.
+        VALHostEngine.sharedInstance().shutdownEngine()
     }
 
     //--------------------------------------------------------------------------
@@ -111,6 +114,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Don't steal keys while the user is typing (e.g. the plugin search field).
         if let responder = NSApp.keyWindow?.firstResponder,
            responder is NSText || responder is NSTextView {
+            return event
+        }
+        // Plugin editor windows are JUCE windows: their text fields (preset names
+        // etc.) are not NSText responders, so leave every key there to the plugin.
+        // A note started in the main window is still released here, so it cannot
+        // get stuck when focus moves to a plugin window before the key comes up.
+        if let window = event.window, NSStringFromClass(type(of: window)).hasPrefix("JUCE") {
+            if event.type == .keyUp,
+               let key = event.charactersIgnoringModifiers?.lowercased(),
+               let note = pressedKeys.removeValue(forKey: key) {
+                VALHostState.shared.activeTouches.remove(note)
+                VALHostEngine.sharedInstance().sendMidiNoteOff(Int32(note))
+            }
             return event
         }
         // Leave shortcuts (⌘, ⌃, ⌥, fn) untouched.

@@ -178,7 +178,8 @@
 // Master controls
 - (float)getVolume
 {
-    return _audioEngine ? _audioEngine->getFaderGain() : 1.0f;
+    // Same startup default as FaderProcessor::startupGain (20 % == -30 dB).
+    return _audioEngine ? _audioEngine->getFaderGain() : 0.0316227766f;
 }
 
 - (void)setVolume:(float)volume
@@ -194,6 +195,11 @@
 - (void)setMute:(BOOL)mute
 {
     if (_audioEngine) _audioEngine->setMuteFromUI(mute);
+}
+
+- (void)playTestTone
+{
+    if (_audioEngine) _audioEngine->playTestTone();
 }
 
 // Metering & Info
@@ -229,6 +235,38 @@
             false // hide advanced options
         );
         selector->setSize (460, 320);
+
+        // JUCE's own "Test" button calls deviceManager.playTestSound(), whose tone
+        // is mixed into the device output *after* the audio callbacks — it never
+        // passes through the graph, so the master fader cannot attenuate it and it
+        // always plays at full scale. Retarget the very same button at our tone
+        // instead, which runs through the fader and is as loud as the current
+        // volume setting.
+        std::function<bool (juce::Component&)> retargetTestButton =
+            [&] (juce::Component& parent) -> bool
+            {
+                for (auto* child : parent.getChildren())
+                {
+                    if (auto* button = dynamic_cast<juce::TextButton*> (child))
+                    {
+                        if (button->getButtonText().trim().equalsIgnoreCase ("Test"))
+                        {
+                            button->onClick = [self]
+                            {
+                                if (self->_audioEngine) self->_audioEngine->playTestTone();
+                            };
+                            button->setTooltip ("Plays a test tone at the current VALHost volume");
+                            return true;
+                        }
+                    }
+
+                    if (retargetTestButton (*child))
+                        return true;
+                }
+                return false;
+            };
+
+        retargetTestButton (*selector);
 
         juce::DialogWindow::LaunchOptions options;
         options.content.setOwned (selector.release());

@@ -126,6 +126,10 @@ void AudioEngine::init()
     faderNode = audioGraph->addNode (std::make_unique<FaderProcessor>());
     faderProcessor = dynamic_cast<FaderProcessor*> (faderNode->getProcessor());
 
+    // Test tone generator. It feeds the fader node's input, so the master fader
+    // scales it like everything else in the chain.
+    testToneNode = audioGraph->addNode (std::make_unique<TestToneProcessor>());
+
     // Setup player
     graphPlayer = std::make_unique<juce::AudioProcessorPlayer>();
     graphPlayer->setProcessor (audioGraph.get());
@@ -147,8 +151,11 @@ void AudioEngine::init()
     systemVolumeLink = std::make_unique<SystemVolumeLink>();
     systemVolumeLink->onExternalVolume = [this] (float scalar) { setFaderGain (gainForPosition (scalar)); };
     systemVolumeLink->onExternalMute   = [this] (bool mute)    { setFaderMute (mute); };
+    // start() (and any later re-appearance of the driver) pushes the current
+    // fader value onto VALDriver through these.
+    systemVolumeLink->queryVolume = [this] { return positionForGain (getFaderGain()); };
+    systemVolumeLink->queryMute   = [this] { return getFaderMute(); };
     systemVolumeLink->start();
-    syncVolumeToDriver();   // make the driver agree with the current fader value
    #endif
 }
 
@@ -629,8 +636,13 @@ void AudioEngine::updateGraphConnections()
     if (audioGraph == nullptr)
         return;
 
+    // Rewire with UpdateKind::none and rebuild once at the end. With the default
+    // (sync) every single add/remove would rebuild the render sequence, and the
+    // audio thread would briefly play a half-wired graph (audible dropouts).
+    constexpr auto noUpdate = juce::AudioProcessorGraph::UpdateKind::none;
+
     for (auto& c : audioGraph->getConnections())
-        audioGraph->removeConnection (c);
+        audioGraph->removeConnection (c, noUpdate);
 
     // 1. Connect MIDI Input node to all plugin nodes
     for (int i = 0; i < totalSlots; ++i)
@@ -638,7 +650,8 @@ void AudioEngine::updateGraphConnections()
         if (activeNodes[i] != nullptr)
         {
             audioGraph->addConnection ({ { midiInputNode->nodeID, juce::AudioProcessorGraph::midiChannelIndex },
-                                         { activeNodes[i]->nodeID, juce::AudioProcessorGraph::midiChannelIndex } });
+                                         { activeNodes[i]->nodeID, juce::AudioProcessorGraph::midiChannelIndex } },
+                                       noUpdate);
         }
     }
 
@@ -659,7 +672,7 @@ void AudioEngine::updateGraphConnections()
             for (int ch = 0; ch < 2; ++ch)
             {
                 audioGraph->addConnection ({ { lastNode->nodeID, ch },
-                                             { activeNodes[i]->nodeID, ch } });
+                                             { activeNodes[i]->nodeID, ch } }, noUpdate);
             }
             lastNode = activeNodes[i];
         }
@@ -669,15 +682,28 @@ void AudioEngine::updateGraphConnections()
     for (int ch = 0; ch < 2; ++ch)
     {
         audioGraph->addConnection ({ { lastNode->nodeID, ch },
-                                     { faderNode->nodeID, ch } });
+                                     { faderNode->nodeID, ch } }, noUpdate);
+    }
+
+    // 4b. Sum the test-tone generator into the same fader input, so the tone is
+    //     attenuated by the master fader exactly like the rest of the chain.
+    if (testToneNode != nullptr)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            audioGraph->addConnection ({ { testToneNode->nodeID, ch },
+                                         { faderNode->nodeID, ch } }, noUpdate);
+        }
     }
 
     // 5. Connect faderNode to the Audio Output node
     for (int ch = 0; ch < 2; ++ch)
     {
         audioGraph->addConnection ({ { faderNode->nodeID, ch },
-                                     { audioOutputNode->nodeID, ch } });
+                                     { audioOutputNode->nodeID, ch } }, noUpdate);
     }
+
+    audioGraph->rebuild();
 }
 
 bool AudioEngine::saveSession (const juce::File& file)
@@ -744,8 +770,12 @@ bool AudioEngine::loadSession (const juce::File& file, juce::String& errorMessag
         return false;
     }
 
-    setFaderGain ((float) state->getProperty ("volume"));
-    setFaderMute ((bool) state->getProperty ("mute"));
+    // Missing keys keep the current value instead of falling back to var()'s
+    // 0 / false — a missing "volume" would otherwise silence the output.
+    if (state->hasProperty ("volume"))
+        setFaderGain (juce::jlimit (0.0f, 2.0f, (float) state->getProperty ("volume")));
+    if (state->hasProperty ("mute"))
+        setFaderMute ((bool) state->getProperty ("mute"));
 
    #if JUCE_MAC
     // VALHost is authoritative for the restored value: mirror it onto VALDriver
@@ -753,12 +783,14 @@ bool AudioEngine::loadSession (const juce::File& file, juce::String& errorMessag
     syncVolumeToDriver();
    #endif
 
+    // Every slot the session does not describe (short or missing "slots" array)
+    // ends up empty, so no plugin from the previous setup survives the load.
     auto* slots = state->getProperty ("slots").getArray();
-    if (slots != nullptr)
     {
-        for (int i = 0; i < juce::jmin (slots->size(), totalSlots); ++i)
+        for (int i = 0; i < totalSlots; ++i)
         {
-            auto* slotObj = (*slots)[i].getDynamicObject();
+            auto* slotObj = (slots != nullptr && i < slots->size()) ? (*slots)[i].getDynamicObject()
+                                                                    : nullptr;
             if (slotObj && (bool) slotObj->getProperty ("loaded"))
             {
                 juce::PluginDescription desc;
@@ -868,6 +900,16 @@ void AudioEngine::handleNoteOff (juce::MidiKeyboardState* /*state*/, int midiCha
         m.setTimeStamp (juce::Time::getMillisecondCounterHiRes() * 0.001);
         graphPlayer->getMidiMessageCollector().addMessageToQueue (m);
     }
+}
+
+//==============================================================================
+void AudioEngine::playTestTone()
+{
+    if (testToneNode == nullptr)
+        return;
+
+    if (auto* tone = dynamic_cast<TestToneProcessor*> (testToneNode->getProcessor()))
+        tone->trigger();
 }
 
 //==============================================================================

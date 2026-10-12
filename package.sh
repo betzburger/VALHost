@@ -20,7 +20,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="${VERSION:-1.2}"
+VERSION="${VERSION:-1.3.1}"
 SCHEME="VALHost"
 PROJECT="build_xcode/VALHost.xcodeproj"
 

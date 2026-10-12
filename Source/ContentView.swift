@@ -21,8 +21,10 @@ class VALHostState: ObservableObject {
     @Published var leftPeakHold: Float = 0.0
     @Published var rightPeakHold: Float = 0.0
     
-    // Mixer State
-    @Published var volume: Double = 1.0
+    // Mixer State. The volume default must match FaderProcessor::startupGain
+    // (VALHost/Source/AudioEngine.h): fader position 0.2 == -30 dB == 20 %,
+    // which is also VALDriver's kStartupVolumeScalar.
+    @Published var volume: Double = 0.0316227766
     @Published var isMute: Bool = false
 
     // Slot Names
@@ -122,8 +124,16 @@ class VALHostState: ObservableObject {
         self.isMute = VALHostEngine.sharedInstance().getMute()
     }
 
-    func loadPlugin(slot: Int, name: String) {
-        if let idx = plugins.firstIndex(where: { $0.name == name }) {
+    // Looked up by identity, not by name: the same plugin is often installed in
+    // several formats (AU + VST3) under one name. The index into `plugins` is the
+    // engine's known-plugin index, which only holds while no scan is rewriting
+    // that list.
+    func loadPlugin(slot: Int, plugin: ScannedPlugin) {
+        guard !isScanning else {
+            flashStatus("Please wait until the plug-in scan has finished.")
+            return
+        }
+        if let idx = plugins.firstIndex(where: { $0.id == plugin.id }) {
             var err: NSString?
             let success = VALHostEngine.sharedInstance().loadPlugin(atSlot: Int32(slot), pluginIndex: Int32(idx), error: &err)
             if !success {
@@ -159,7 +169,14 @@ class VALHostState: ObservableObject {
         _ = VALHostEngine.sharedInstance().saveSession(toFile: lastSessionPath)
     }
 
+    // The last session is restored once per launch. The main window can be
+    // closed and reopened while the app keeps running from the menu bar; reloading
+    // then would rebuild every plugin from a stale file and lose live changes.
+    private var didRestoreLastSession = false
+
     func loadLastSession() {
+        guard !didRestoreLastSession else { return }
+        didRestoreLastSession = true
         guard FileManager.default.fileExists(atPath: lastSessionPath) else { return }
         var err: NSString?
         _ = VALHostEngine.sharedInstance().loadSession(fromFile: lastSessionPath, error: &err)
@@ -796,20 +813,37 @@ struct MixerStripView: View {
 
             Spacer(minLength: 12)
 
-            // Mute + MIDI Panic
+            // Mute + Test tone + MIDI Panic
             HStack(spacing: 8) {
                 Button(action: {
                     state.isMute.toggle()
                     VALHostEngine.sharedInstance().setMute(state.isMute)
                     state.saveLastSession()
                 }) {
-                    Text("MUTE")
+                    // Shows the action the button performs, so an active mute
+                    // reads as "UNMUTE" (same as the menu-bar panel).
+                    Text(state.isMute ? "UNMUTE" : "MUTE")
                         .font(.system(size: 11, weight: .bold))
                         .frame(maxWidth: .infinity)
                         .frame(height: 26)
                 }
                 .tint(state.isMute ? .red : .gray)
                 .buttonStyle(.borderedProminent)
+
+                // Test tone, played through the master fader — so it is exactly as
+                // loud as the current volume (JUCE's device-selector Test button
+                // bypasses the fader and always plays at full scale).
+                Button(action: {
+                    VALHostEngine.sharedInstance().playTestTone()
+                }) {
+                    Text("TEST")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 62)
+                        .frame(height: 26)
+                }
+                .tint(.teal)
+                .buttonStyle(.bordered)
+                .help("Play a 440 Hz test tone at the current volume")
 
                 Button(action: {
                     state.panic()
@@ -946,7 +980,7 @@ struct SidebarView: View {
                             } else if slot > 0 && plugin.isInstrument {
                                 state.statusMessage = "Selected slot (Effects) only accepts Effect plugins."
                             } else {
-                                state.loadPlugin(slot: slot, name: plugin.name)
+                                state.loadPlugin(slot: slot, plugin: plugin)
                                 state.statusMessage = "Loaded \(plugin.name) into selected slot."
                                 state.selectedPluginId = nil
                             }

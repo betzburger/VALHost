@@ -17,12 +17,19 @@ public:
 
     ~FaderProcessor() override = default;
 
-    void prepareToPlay (double /*sampleRate*/, int /*samplesPerBlock*/) override {}
+    void prepareToPlay (double /*sampleRate*/, int /*samplesPerBlock*/) override
+    {
+        appliedGain = mute.load() ? 0.0f : gain.load();
+    }
     void releaseResources() override {}
 
     void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/) override
     {
-        if (mute.load())
+        // Mute is just a target gain of 0. Any change of the target is ramped over
+        // one block, so fader moves and (un)muting never click or zipper.
+        const float target = mute.load() ? 0.0f : gain.load();
+
+        if (target == 0.0f && appliedGain == 0.0f)
         {
             buffer.clear();
             leftLevel.store (0.0f);
@@ -30,9 +37,12 @@ public:
             return;
         }
 
-        const float g = gain.load();
-        if (g != 1.0f)
-            buffer.applyGain (g);
+        if (target != appliedGain)
+            buffer.applyGainRamp (0, buffer.getNumSamples(), appliedGain, target);
+        else if (target != 1.0f)
+            buffer.applyGain (target);
+
+        appliedGain = target;
 
         auto numSamples = buffer.getNumSamples();
         if (numSamples > 0)
@@ -72,13 +82,114 @@ public:
     bool hasEditor() const override { return false; }
     juce::AudioProcessorEditor* createEditor() override { return nullptr; }
 
-    std::atomic<float> gain { 1.0f };
+    // Startup gain. MUST stay in sync with the taper anchors below and with
+    // VALDriver's kStartupVolumeScalar: position 0.2 == -30 dB == 20 % on the
+    // system volume slider. Anything higher means VALHost boots into a loud
+    // state before a session (if any) has been restored.
+    static constexpr float startupGain = 0.0316227766f;   // 10 ^ (-30 / 20)
+
+    std::atomic<float> gain { startupGain };
     std::atomic<bool> mute { false };
     std::atomic<float> leftLevel { 0.0f };
     std::atomic<float> rightLevel { 0.0f };
 
 private:
+    float appliedGain = startupGain;   // audio thread only: gain at the end of the last block
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FaderProcessor)
+};
+
+//==============================================================================
+/** Generates the "Test" tone for the settings dialog.
+
+    JUCE's own device-selector test tone is mixed into the device output *after*
+    the audio callbacks, so it bypasses the whole graph — and therefore the
+    master fader — and always plays at full scale. This processor produces the
+    identical signal (440 Hz, 0.5 amplitude, 1 s, faded) but sits *upstream* of
+    the fader node, so the tone is exactly as loud as the current volume setting.
+*/
+class TestToneProcessor : public juce::AudioProcessor
+{
+public:
+    TestToneProcessor()
+        : AudioProcessor (BusesProperties()
+                            .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
+    {}
+
+    ~TestToneProcessor() override = default;
+
+    // Message thread: queue one tone. The audio thread picks it up on the next
+    // block, so no locking is needed.
+    void trigger() { triggers.fetch_add (1); }
+
+    void prepareToPlay (double newSampleRate, int) override { sampleRate = newSampleRate; }
+    void releaseResources() override {}
+
+    void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+    {
+        const int numSamples = buffer.getNumSamples();
+        buffer.clear();
+
+        if (triggers.exchange (0) > 0)
+        {
+            playing = true;
+            position = 0;
+        }
+
+        if (! playing)
+            return;
+
+        const double sr = sampleRate > 0.0 ? sampleRate : 44100.0;
+        const int total = (int) sr;                 // 1 second
+        const int fadeIn = total / 10;
+        const int fadeOutStart = total - total / 4;
+        const double phasePerSample = juce::MathConstants<double>::twoPi * 440.0 / sr;
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            if (position >= total)
+            {
+                playing = false;
+                break;
+            }
+
+            float envelope = 1.0f;
+            if (position < fadeIn)
+                envelope = (float) position / (float) fadeIn;
+            else if (position >= fadeOutStart)
+                envelope = (float) (total - position) / (float) (total - fadeOutStart);
+
+            const float sample = 0.5f * envelope * (float) std::sin (phasePerSample * position);
+
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                buffer.setSample (ch, i, sample);
+
+            ++position;
+        }
+    }
+
+    const juce::String getName() const override { return "Test Tone"; }
+    bool acceptsMidi() const override { return false; }
+    bool producesMidi() const override { return false; }
+    bool isMidiEffect() const override { return false; }
+    double getTailLengthSeconds() const override { return 0.0; }
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram (int) override {}
+    const juce::String getProgramName (int) override { return {}; }
+    void changeProgramName (int, const juce::String&) override {}
+    void getStateInformation (juce::MemoryBlock&) override {}
+    void setStateInformation (const void*, int) override {}
+    bool hasEditor() const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+
+private:
+    std::atomic<int> triggers { 0 };
+    bool playing = false;          // audio thread only
+    int position = 0;              // audio thread only
+    double sampleRate = 44100.0;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TestToneProcessor)
 };
 
 //==============================================================================
@@ -176,7 +287,7 @@ public:
     void updateGraphConnections();
 
     // Volume & Metering
-    float getFaderGain() const { return faderProcessor != nullptr ? faderProcessor->gain.load() : 1.0f; }
+    float getFaderGain() const { return faderProcessor != nullptr ? faderProcessor->gain.load() : FaderProcessor::startupGain; }
     void setFaderGain (float gain) { if (faderProcessor) faderProcessor->gain.store (gain); }
     bool getFaderMute() const { return faderProcessor != nullptr ? faderProcessor->mute.load() : false; }
     void setFaderMute (bool mute) { if (faderProcessor) faderProcessor->mute.store (mute); }
@@ -188,6 +299,12 @@ public:
     // applied by the property listener and must NOT be echoed back here.
     void setVolumeFromUI (float gain);
     void setMuteFromUI (bool mute);
+
+    // Play the master test tone (440 Hz). It runs through the graph *and* the
+    // master fader, so it is exactly as loud as the current volume setting —
+    // unlike JUCE's device-selector tone, which is mixed into the device output
+    // after the callbacks and always plays at full scale.
+    void playTestTone();
     float getLeftLevel() const { return faderProcessor != nullptr ? faderProcessor->leftLevel.load() : 0.0f; }
     float getRightLevel() const { return faderProcessor != nullptr ? faderProcessor->rightLevel.load() : 0.0f; }
 
@@ -229,6 +346,10 @@ private:
     // Fader / Master Output Node
     juce::AudioProcessorGraph::Node::Ptr faderNode;
     FaderProcessor* faderProcessor = nullptr; // Pointer to processor inside faderNode
+
+    // Test-tone generator, mixed into the fader node's input (see
+    // TestToneProcessor). Always present in the graph, silent when idle.
+    juce::AudioProcessorGraph::Node::Ptr testToneNode;
 
     // Active Plugin Nodes in slots: [0] = Instrument, [1..4] = Effects
     juce::AudioProcessorGraph::Node::Ptr activeNodes[totalSlots];
